@@ -16,10 +16,16 @@ class JobService:
         self.repository = repository
 
     def create_job(self, job_create: JobCreateRequest) -> Job:
-        return self.repository.create(
+        job = self.repository.create(
             payload=job_create.payload,
             status=JobStatus.QUEUED,
         )
+
+        from app.tasks import process_job
+
+        process_job.delay(job.id)
+
+        return job
 
     def get_job(self, job_id: int) -> Job:
         job = self.repository.get_by_id(job_id)
