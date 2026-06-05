@@ -1,7 +1,17 @@
-__pycache__/
-*.py[cod]
-*.db
+# Local environment
+.env
 .venv/
 venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
 .pytest_cache/
+
+# Local database files
+*.db
+*.sqlite
+*.sqlite3
+
+# macOS
 .DS_Store
