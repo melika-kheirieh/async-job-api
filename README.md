@@ -76,7 +76,7 @@ Client polls job status
 
 ### Database as the source of truth
 
-The database stores the job state:
+The database stores the durable job state:
 
 * payload
 * status
@@ -86,7 +86,7 @@ The database stores the job state:
 
 Redis is used only as the message broker for Celery. It is not used as the source of truth for job status or results.
 
-This makes job state persistent, queryable, and easier to debug.
+This keeps job state persistent, queryable, and easier to debug.
 
 ---
 
@@ -279,37 +279,29 @@ To avoid blindly re-processing finished jobs, the worker checks whether a job is
 
 This is a simplified duplicate execution guard. It is useful for this mini project, but it is not full production-grade idempotency.
 
+For sensitive side effects such as payments, emails, notifications, or external API calls, checking terminal job status alone would not be enough. Those cases require stronger idempotency guarantees.
+
 ---
 
-## Limitations
+## Reliability Notes
 
-This project intentionally does not implement:
+This project intentionally separates durable state from message delivery:
 
-* authentication
-* frontend
-* Alembic migrations
-* PostgreSQL migration
-* Kubernetes
-* advanced monitoring
-* distributed locking
-* production-grade retries
-* production-grade idempotency
-* stuck job recovery
-* multiple job types
-* queue priorities
-* rate limiting
+* The database stores job state, payload, result, and error information.
+* Redis delivers task messages to Celery workers.
+* The worker updates job state in the database as processing progresses.
 
-For sensitive side effects such as payments, emails, notifications, or external API calls, a stronger design would be required.
+This means the database is the best place to inspect the current job state.
 
-Examples of stronger production-oriented patterns include:
+However, this project does not fully solve all distributed job-processing failure modes. For example:
 
-* idempotency keys
-* unique transaction records
-* outbox-like patterns
-* retry policies with backoff
-* stuck job cleanup or reconciliation
-* structured logging with `job_id` / `request_id`
-* stronger transaction boundaries around side effects
+* a worker may crash while processing a job,
+* a broker may redeliver a task,
+* a task may run more than once,
+* a job may remain stuck in `running`,
+* a retry may need backoff and retry-count tracking.
+
+The project includes a small terminal-status guard, but production systems need stronger reliability patterns.
 
 ---
 
@@ -389,16 +381,44 @@ curl -X POST http://localhost:8001/jobs \
   -d '{"payload": {"text": "hello service boundary"}}'
 ```
 
+The response contains an `id`. Use that id when polling the job.
+
 Poll the job:
 
 ```bash
-curl http://localhost:8001/jobs/1
+curl http://localhost:8001/jobs/<JOB_ID>
+```
+
+Example:
+
+```bash
+curl http://localhost:8001/jobs/10
 ```
 
 Expected final status:
 
 ```text
 completed
+```
+
+Example final response:
+
+```json
+{
+  "id": 10,
+  "status": "completed",
+  "payload": {
+    "text": "hello service boundary"
+  },
+  "result": {
+    "processed": true,
+    "input_size": 33,
+    "message": "Job completed successfully"
+  },
+  "error_message": null,
+  "created_at": "2026-06-05T08:37:41.235786",
+  "updated_at": "2026-06-05T08:37:41.337479"
+}
 ```
 
 ---
@@ -413,10 +433,18 @@ curl -X POST http://localhost:8001/jobs \
   -d '{"payload": {"text": "fail case", "fail": true}}'
 ```
 
+The response contains an `id`. Use that id when polling the job.
+
 Poll the job:
 
 ```bash
-curl http://localhost:8001/jobs/2
+curl http://localhost:8001/jobs/<FAILED_JOB_ID>
+```
+
+Example:
+
+```bash
+curl http://localhost:8001/jobs/11
 ```
 
 Expected final status:
@@ -429,6 +457,23 @@ Expected error message:
 
 ```text
 Forced failure requested by payload
+```
+
+Example final response:
+
+```json
+{
+  "id": 11,
+  "status": "failed",
+  "payload": {
+    "text": "fail case",
+    "fail": true
+  },
+  "result": null,
+  "error_message": "Forced failure requested by payload",
+  "created_at": "2026-06-05T08:37:46.674055",
+  "updated_at": "2026-06-05T08:37:46.684110"
+}
 ```
 
 ---
@@ -449,6 +494,41 @@ The test suite covers the core API and job lifecycle behavior, including:
 * job lifecycle transitions
 * completed jobs
 * failed jobs
+
+Celery worker behavior is also validated manually through Docker Compose using the success and failure flows shown above.
+
+---
+
+## Known Limitations
+
+This project intentionally does not implement:
+
+* authentication
+* frontend
+* Alembic migrations
+* PostgreSQL migration
+* Kubernetes
+* advanced monitoring
+* distributed locking
+* production-grade retries
+* production-grade idempotency
+* stuck job recovery
+* multiple job types
+* queue priorities
+* rate limiting
+
+For sensitive side effects such as payments, emails, notifications, or external API calls, a stronger design would be required.
+
+Examples of stronger production-oriented patterns include:
+
+* idempotency keys
+* unique transaction records
+* outbox-like patterns
+* retry policies with backoff
+* retry counters and retry status tracking
+* stuck job cleanup or reconciliation
+* structured logging with `job_id` and `request_id`
+* stronger transaction boundaries around side effects
 
 ---
 
@@ -477,7 +557,7 @@ Possible next steps:
 * add stuck job cleanup or reconciliation
 * add idempotency keys
 * add stronger side-effect protection
-* add structured logging with `job_id` / `request_id`
+* add structured logging with `job_id` and `request_id`
 * add CI
 * add integration tests for worker behavior
 * add metrics for queued/running/completed/failed jobs
