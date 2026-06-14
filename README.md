@@ -1,30 +1,4 @@
-# Async Job API
-
-A small FastAPI + Celery backend system for handling asynchronous jobs with database-backed status tracking, worker execution, failure visibility, and duplicate execution awareness.
-
-The project demonstrates how a backend API can accept long-running work, persist job state, delegate execution to a worker, and expose job progress through a polling endpoint.
-
----
-
-## What This Project Demonstrates
-
-This project focuses on the core backend workflow behind asynchronous job processing:
-
-- API contract design for job submission
-- Database-backed job status tracking
-- Redis/Celery worker execution flow
-- Worker-driven job lifecycle transitions
-- Failure visibility through persisted state
-- Duplicate execution awareness
-- Service/repository boundaries
-- Docker Compose based local setup
-- Basic API and lifecycle test coverage
-
-The goal is not to build a full production job platform. The goal is to show a clean, explainable backend workflow for submitting, processing, tracking, and debugging background jobs.
-
----
-
-## Why This Project Exists
+## Overview
 
 Long-running or failure-prone work should not run directly inside the request/response cycle.
 
@@ -37,7 +11,32 @@ Instead of making the client wait for processing to finish, this API:
 5. stores the final result or error in the database,
 6. allows the client to poll job status through `GET /jobs/{job_id}`.
 
-This separates job submission from job execution.
+The main idea is simple:
+
+> The API submits work.  
+> The worker executes work.  
+> The database stores the truth.
+
+---
+
+## What This Project Demonstrates
+
+This project focuses on the core backend workflow behind asynchronous job processing:
+
+- API contract design for job submission
+- database-backed job status tracking
+- Redis/Celery worker execution flow
+- worker-driven job lifecycle transitions
+- failure visibility through persisted state
+- duplicate execution awareness
+- service/repository boundaries
+- Docker Compose based local setup
+- API, service, and worker-processing tests
+- CI with GitHub Actions
+
+The goal is not to build a full production job platform.
+
+The goal is to show a clean, explainable backend workflow for submitting, processing, tracking, and debugging background jobs.
 
 ---
 
@@ -49,7 +48,8 @@ This separates job submission from job execution.
 - Redis — Celery broker
 - Celery — background worker execution
 - Docker Compose — local multi-service setup
-- Pytest — API and lifecycle tests
+- Pytest — API, service, and worker-processing tests
+- GitHub Actions — test automation
 
 ---
 
@@ -90,8 +90,8 @@ Client polls job status
 The project keeps HTTP concerns, use-case logic, and persistence concerns separated:
 
 ```text
-Router → Service → Repository → Database
-Worker → Service → Repository → Database
+Router  → Service → Repository → Database
+Worker  → Service → Repository → Database
 ```
 
 ### Router
@@ -119,9 +119,9 @@ It creates job records, loads jobs by id, and persists status/result/error updat
 
 ### Worker
 
-The worker does not directly embed database logic.
+The worker receives a `job_id`, loads the job through the service/repository path, processes the job, and updates the database-backed status.
 
-It receives a `job_id`, loads the job through the service/repository path, processes the job, and updates the database-backed status.
+The Celery task is kept as a thin wrapper around testable worker-processing logic.
 
 ---
 
@@ -137,9 +137,9 @@ The database stores the durable job state:
 * error message
 * timestamps
 
-Redis is used only as the Celery message broker. It is not used as the source of truth for job status or job results.
+Redis is used only as the Celery message broker.
 
-This keeps job state persistent, queryable, and easier to debug.
+It is not used as the source of truth for job status or job results. This keeps job state persistent, queryable, and easier to debug.
 
 ### Celery task receives only `job_id`
 
@@ -230,7 +230,9 @@ Example response:
 }
 ```
 
-This response means the job was created and queued. It does not mean the job has already finished.
+This response means the job was created and queued.
+
+It does not mean the job has already finished.
 
 ---
 
@@ -313,17 +315,23 @@ The worker logs key execution events:
 * job completed
 * job failed
 * terminal job skipped
+* missing job skipped
 
 Example logs:
 
 ```text
 Starting job processing: job_id=8
 Job completed: job_id=8
+
 Starting job processing: job_id=9
 Job failed: job_id=9 error=Forced failure requested by payload
+
+Skipping terminal job: job_id=10 status=completed
 ```
 
 This is intentionally lightweight logging, not a full observability setup.
+
+For a production system, this could be extended with request id propagation, centralized structured logging, tracing, metrics, and alerting.
 
 ---
 
@@ -338,7 +346,9 @@ To avoid blindly re-processing finished jobs, the worker checks whether a job is
 
 This is a simplified duplicate execution guard.
 
-For sensitive side effects such as payments, emails, notifications, or external API calls, checking terminal job status alone would not be enough. Those cases require stronger idempotency guarantees, such as:
+For sensitive side effects such as payments, emails, notifications, or external API calls, checking terminal job status alone would not be enough.
+
+Those cases require stronger idempotency guarantees, such as:
 
 * idempotency keys
 * unique transaction records
@@ -357,7 +367,9 @@ This project intentionally separates durable state from message delivery:
 
 This means the database is the best place to inspect the current job state.
 
-However, this project does not fully solve all distributed job-processing failure modes. For example:
+However, this project does not fully solve all distributed job-processing failure modes.
+
+For example:
 
 * a worker may crash while processing a job,
 * a broker may redeliver a task,
@@ -373,7 +385,9 @@ The project includes a small terminal-status guard, but production systems need 
 
 This project uses SQLite for simplicity.
 
-SQLite is acceptable for a small local learning/demo project, but it is not the best choice for a production-like multi-process worker/API setup.
+SQLite is acceptable for a small local demo project, but it is not the best choice for a production-like multi-process worker/API setup.
+
+The Docker Compose setup uses a shared volume so the API and worker can access the same SQLite database file.
 
 For a more realistic backend setup, PostgreSQL would be preferred because it handles concurrent access, transactions, constraints, and production workloads more robustly.
 
@@ -450,12 +464,6 @@ The response contains an `id`.
 Use that id when polling the job:
 
 ```bash
-curl http://localhost:8001/<JOB_ID>
-```
-
-Correct endpoint:
-
-```bash
 curl http://localhost:8001/jobs/<JOB_ID>
 ```
 
@@ -502,7 +510,7 @@ The response contains an `id`.
 Poll the job:
 
 ```bash
-curl http://localhost:8001/jobs/<FAILED_JOB_ID>
+curl http://localhost:8001/jobs/<JOB_ID>
 ```
 
 Expected final status:
@@ -541,12 +549,13 @@ Example final response:
 Run tests with:
 
 ```bash
-pytest
+pytest -q
 ```
 
-The current test suite covers core API and job lifecycle behavior, including:
+The current test suite covers core API, service, and worker-processing behavior, including:
 
 * creating a job
+* rejecting invalid job creation requests
 * fetching an existing job
 * returning 404 for unknown jobs
 * initial queued status
@@ -554,8 +563,27 @@ The current test suite covers core API and job lifecycle behavior, including:
 * completed transition
 * failed transition
 * missing-job service errors
+* enqueue boundary behavior without requiring a real broker
+* worker processing success path
+* worker processing failure path
+* terminal-status skip behavior
 
-Celery worker behavior is validated manually through Docker Compose using the success and failure flows shown above.
+The core worker processing logic is tested without requiring Redis or a running Celery worker.
+
+Full Celery/Redis integration is validated manually through Docker Compose using the success and failure flows shown above.
+
+---
+
+## CI
+
+GitHub Actions runs the test suite on push and pull request.
+
+The current CI workflow:
+
+* checks out the repository,
+* sets up Python,
+* installs dependencies,
+* runs `pytest -q`.
 
 ---
 
@@ -594,9 +622,9 @@ Possible next steps:
 * add stuck job cleanup or reconciliation
 * add idempotency keys
 * add stronger side-effect protection
-* add structured logging with `job_id` and `request_id`
-* add CI with GitHub Actions
-* add integration tests for worker behavior
+* add request id propagation and centralized structured logging
+* add linting and formatting checks to CI
+* add Celery/Redis integration tests
 * add metrics for queued/running/completed/failed jobs
 
 ---
@@ -605,11 +633,14 @@ Possible next steps:
 
 This project demonstrates a small but realistic async job-processing flow.
 
-The FastAPI API creates a job in the database with `queued` status and enqueues a Celery task through Redis. The worker receives only the `job_id`, reads the job from the database, marks it as `running`, performs simplified processing, and then marks it as `completed` or `failed`.
+The FastAPI API creates a job in the database with `queued` status and enqueues a Celery task through Redis.
 
-The database is the source of truth for job status, result, and error information. Redis is used only as the broker.
+The worker receives only the `job_id`, reads the job from the database, marks it as `running`, performs simplified processing, and then marks it as `completed` or `failed`.
 
-The project also includes a simple failure path, lightweight worker logging, and a terminal-status guard to avoid blindly re-processing jobs that are already completed or failed.
+The database is the source of truth for job status, result, and error information.
+
+Redis is used only as the broker.
+
+The project also includes a simple failure path, lightweight worker logging, a testable worker-processing function, CI, and a terminal-status guard to avoid blindly re-processing jobs that are already completed or failed.
 
 This is not full production-grade idempotency, but it shows the reliability concerns and where stronger patterns would be needed.
-
