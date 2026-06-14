@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from typing import Any
 
 from app.models import Job, JobStatus
@@ -12,8 +13,13 @@ class JobNotFoundError(Exception):
 
 
 class JobService:
-    def __init__(self, repository: JobRepository):
+    def __init__(
+        self,
+        repository: JobRepository,
+        enqueue_job: Callable[[int], None] | None = None,
+    ):
         self.repository = repository
+        self.enqueue_job = enqueue_job
 
     def create_job(self, job_create: JobCreateRequest) -> Job:
         job = self.repository.create(
@@ -21,9 +27,8 @@ class JobService:
             status=JobStatus.QUEUED,
         )
 
-        from app.tasks import process_job
-
-        process_job.delay(job.id)
+        if self.enqueue_job is not None:
+            self.enqueue_job(job.id)
 
         return job
 

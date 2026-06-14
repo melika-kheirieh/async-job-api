@@ -11,9 +11,15 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(title="Async Job API")
 
 
+def enqueue_process_job(job_id: int) -> None:
+    from app.tasks import process_job
+
+    process_job.delay(job_id)
+
+
 def get_job_service(db: Session = Depends(get_db)) -> JobService:
     repository = JobRepository(db)
-    return JobService(repository)
+    return JobService(repository, enqueue_job=enqueue_process_job)
 
 
 @app.post(

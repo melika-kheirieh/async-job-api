@@ -110,3 +110,40 @@ def test_mark_failed_missing_job_raises_not_found(job_service):
             999999,
             "Something went wrong",
         )
+
+
+def test_create_job_calls_enqueue_with_created_job_id():
+    test_engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+
+    TestingSessionLocal = sessionmaker(
+        autocommit=False,
+        autoflush=False,
+        bind=test_engine,
+    )
+
+    Base.metadata.create_all(bind=test_engine)
+
+    db = TestingSessionLocal()
+    enqueued_job_ids = []
+
+    try:
+        repository = JobRepository(db)
+        service = JobService(
+            repository,
+            enqueue_job=enqueued_job_ids.append,
+        )
+
+        job = service.create_job(
+            JobCreateRequest(payload={"text": "hello backend"})
+        )
+
+        assert enqueued_job_ids == [job.id]
+
+    finally:
+        db.close()
+        Base.metadata.drop_all(bind=test_engine)
+        

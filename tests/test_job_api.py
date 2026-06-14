@@ -4,8 +4,10 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.db import Base, get_db
-from app.main import app
+from app.db import Base
+from app.main import app, get_job_service
+from app.repositories import JobRepository
+from app.services import JobService
 
 
 @pytest.fixture()
@@ -24,14 +26,17 @@ def client():
 
     Base.metadata.create_all(bind=test_engine)
 
-    def override_get_db():
+    def override_get_job_service():
         db = TestingSessionLocal()
+        repository = JobRepository(db)
+        service = JobService(repository)
+
         try:
-            yield db
+            yield service
         finally:
             db.close()
 
-    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_job_service] = override_get_job_service
 
     with TestClient(app) as test_client:
         yield test_client
@@ -56,6 +61,15 @@ def test_create_job_returns_queued_status(client):
     assert data["error_message"] is None
     assert data["created_at"] is not None
     assert data["updated_at"] is not None
+
+
+def test_create_job_rejects_missing_payload(client):
+    response = client.post(
+        "/jobs",
+        json={"text": "hello backend"},
+    )
+
+    assert response.status_code == 422
 
 
 def test_get_job_returns_existing_job(client):
