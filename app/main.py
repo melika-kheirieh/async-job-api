@@ -1,12 +1,11 @@
 from fastapi import Depends, FastAPI, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.db import Base, engine, get_db
+from app.db import get_db
 from app.repositories import JobRepository
 from app.schemas import JobCreateRequest, JobResponse
 from app.services import JobNotFoundError, JobService
 
-Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Async Job API")
 

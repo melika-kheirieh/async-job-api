@@ -7,7 +7,18 @@ ENV PYTHONUNBUFFERED=1
 
 COPY requirements.txt .
 
-RUN pip install --no-cache-dir -r requirements.txt
+ARG PIP_INDEX_URL=https://package-mirror.liara.ir/repository/pypi/simple
+ARG PIP_EXTRA_INDEX_URL=https://pypi.org/simple
+ARG PIP_RETRIES=10
+ARG PIP_TIMEOUT=120
+
+RUN python -m pip install --no-cache-dir \
+    --prefer-binary \
+    --retries "$PIP_RETRIES" \
+    --timeout "$PIP_TIMEOUT" \
+    --index-url "$PIP_INDEX_URL" \
+    --extra-index-url "$PIP_EXTRA_INDEX_URL" \
+    -r requirements.txt
 
 COPY app ./app
 

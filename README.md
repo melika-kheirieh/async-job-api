@@ -381,15 +381,11 @@ The project includes a small terminal-status guard, but production systems need 
 
 ---
 
-## SQLite Note
+## PostgreSQL Docker Runtime
 
-This project uses SQLite for simplicity.
+The default local Python runtime still falls back to SQLite when `DATABASE_URL` is not set, which keeps tests and simple local runs lightweight.
 
-SQLite is acceptable for a small local demo project, but it is not the best choice for a production-like multi-process worker/API setup.
-
-The Docker Compose setup uses a shared volume so the API and worker can access the same SQLite database file.
-
-For a more realistic backend setup, PostgreSQL would be preferred because it handles concurrent access, transactions, constraints, and production workloads more robustly.
+The Docker Compose runtime uses PostgreSQL so the API and worker share the same database through `DATABASE_URL`.
 
 ---
 
@@ -412,8 +408,33 @@ The Docker Compose setup includes:
 * `api`
 * `worker`
 * `redis`
+* `postgres`
 
 The API container listens internally on port `8000` and is mapped to port `8001` on the host.
+
+PostgreSQL stores data in the named Docker volume `pg_data`. Use `docker compose down -v` when you want to remove that local database state.
+
+### Dependency downloads
+
+The Docker build installs Python packages with Liara's PyPI mirror as the primary index and `pypi.org` as a fallback:
+
+```bash
+docker compose build --no-cache api worker
+```
+
+If local network conditions still make direct package downloads unreliable, create a temporary wheelhouse from a Linux Python 3.12 container and build with an offline Dockerfile edit that installs from `/wheels`:
+
+```bash
+mkdir -p wheels
+docker run --rm -v "$PWD:/src" -w /src python:3.12-slim \
+  python -m pip download --dest wheels --prefer-binary \
+  --retries 10 --timeout 120 \
+  --index-url https://package-mirror.liara.ir/repository/pypi/simple \
+  --extra-index-url https://pypi.org/simple \
+  -r requirements.txt
+```
+
+The `wheels/` directory is ignored by git and should remain local only.
 
 ---
 

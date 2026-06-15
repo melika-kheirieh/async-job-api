@@ -1,17 +1,19 @@
-import os
 from collections.abc import Generator
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./jobs.db")
+from app.config import get_settings
+
+
+settings = get_settings()
 
 connect_args = {}
-if DATABASE_URL.startswith("sqlite"):
+if settings.database_url.startswith("sqlite"):
     connect_args = {"check_same_thread": False}
 
 engine = create_engine(
-    DATABASE_URL,
+    settings.database_url,
     connect_args=connect_args,
 )
 

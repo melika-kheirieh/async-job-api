@@ -5,32 +5,52 @@ services:
     ports:
       - "8001:8000"
     environment:
-      DATABASE_URL: sqlite:////data/jobs.db
+      DATABASE_URL: postgresql+psycopg2://postgres:postgres@postgres:5432/jobs
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
     volumes:
       - .:/app
-      - job_data:/data
     depends_on:
-      - redis
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
 
   worker:
     build: .
     command: celery -A app.celery_app.celery_app worker --loglevel=info
     environment:
-      DATABASE_URL: sqlite:////data/jobs.db
+      DATABASE_URL: postgresql+psycopg2://postgres:postgres@postgres:5432/jobs
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
     volumes:
       - .:/app
-      - job_data:/data
     depends_on:
-      - redis
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
 
   redis:
     image: redis:7-alpine
     ports:
       - "6379:6379"
 
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: jobs
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d jobs"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
 volumes:
-  job_data:
+  pg_data:
