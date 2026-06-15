@@ -67,6 +67,12 @@ def test_create_job_returns_queued_status(client):
     assert data["payload"] == {"text": "hello backend"}
     assert data["result"] is None
     assert data["error_message"] is None
+
+    assert data["attempts"] == 0
+    assert data["started_at"] is None
+    assert data["completed_at"] is None
+    assert data["failed_at"] is None
+
     assert data["created_at"] is not None
     assert data["updated_at"] is not None
 
@@ -99,6 +105,14 @@ def test_get_job_returns_existing_job(client):
     assert data["payload"] == {"text": "hello backend"}
     assert data["result"] is None
     assert data["error_message"] is None
+
+    assert data["attempts"] == 0
+    assert data["started_at"] is None
+    assert data["completed_at"] is None
+    assert data["failed_at"] is None
+
+    assert data["created_at"] is not None
+    assert data["updated_at"] is not None
 
 
 def test_get_missing_job_returns_404(client):

@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -25,44 +26,51 @@ class JobRepository:
         return self.db.get(Job, job_id)
 
     def mark_running(self, job_id: int) -> Job | None:
-        return self._update_state(
-            job_id=job_id,
-            status=JobStatus.RUNNING,
-            result=None,
-            error_message=None,
-        )
-
-    def mark_completed(self, job_id: int, result: dict[str, Any]) -> Job | None:
-        return self._update_state(
-            job_id=job_id,
-            status=JobStatus.COMPLETED,
-            result=result,
-            error_message=None,
-        )
-
-    def mark_failed(self, job_id: int, error_message: str) -> Job | None:
-        return self._update_state(
-            job_id=job_id,
-            status=JobStatus.FAILED,
-            result=None,
-            error_message=error_message,
-        )
-
-    def _update_state(
-        self,
-        job_id: int,
-        status: JobStatus,
-        result: dict[str, Any] | None,
-        error_message: str | None,
-    ) -> Job | None:
         job = self.get_by_id(job_id)
 
         if job is None:
             return None
 
-        job.status = status
+        job.status = JobStatus.RUNNING
+        job.attempts += 1
+        job.started_at = datetime.now(UTC)
+        job.completed_at = None
+        job.failed_at = None
+        job.error_message = None
+        job.result = None
+
+        self.db.commit()
+        self.db.refresh(job)
+
+        return job
+
+    def mark_completed(self, job_id: int, result: dict[str, Any]) -> Job | None:
+        job = self.get_by_id(job_id)
+
+        if job is None:
+            return None
+
+        job.status = JobStatus.COMPLETED
         job.result = result
+        job.error_message = None
+        job.completed_at = datetime.now(UTC)
+        job.failed_at = None
+
+        self.db.commit()
+        self.db.refresh(job)
+
+        return job
+
+    def mark_failed(self, job_id: int, error_message: str) -> Job | None:
+        job = self.get_by_id(job_id)
+
+        if job is None:
+            return None
+
+        job.status = JobStatus.FAILED
+        job.result = None
         job.error_message = error_message
+        job.failed_at = datetime.now(UTC)
 
         self.db.commit()
         self.db.refresh(job)
