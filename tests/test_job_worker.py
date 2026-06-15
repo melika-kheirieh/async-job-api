@@ -56,6 +56,11 @@ def test_worker_marks_job_as_completed(db_session):
     }
     assert updated_job.error_message is None
 
+    assert updated_job.attempts == 1
+    assert updated_job.started_at is not None
+    assert updated_job.completed_at is not None
+    assert updated_job.failed_at is None
+
 
 def test_worker_marks_job_as_failed_when_payload_requests_failure(db_session):
     repository = JobRepository(db_session)
@@ -72,6 +77,11 @@ def test_worker_marks_job_as_failed_when_payload_requests_failure(db_session):
     assert updated_job.status == JobStatus.FAILED
     assert updated_job.result is None
     assert updated_job.error_message == "Forced failure requested by payload"
+
+    assert updated_job.attempts == 1
+    assert updated_job.started_at is not None
+    assert updated_job.completed_at is None
+    assert updated_job.failed_at is not None
 
 
 def test_worker_skips_terminal_completed_job(db_session):
@@ -96,3 +106,8 @@ def test_worker_skips_terminal_completed_job(db_session):
     assert updated_job.status == JobStatus.COMPLETED
     assert updated_job.result == original_result
     assert updated_job.error_message is None
+
+    assert updated_job.attempts == 0
+    assert updated_job.started_at is None
+    assert updated_job.completed_at is not None
+    assert updated_job.failed_at is None
