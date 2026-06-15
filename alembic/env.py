@@ -1,5 +1,4 @@
 from logging.config import fileConfig
-import os
 import sys
 from pathlib import Path
 
@@ -10,14 +9,15 @@ from alembic import context
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from app.db import Base, DATABASE_URL
+from app.config import get_settings
+from app.db import Base
 from app import models  # noqa: F401
 
 
 config = context.config
 
-database_url = os.getenv("DATABASE_URL", DATABASE_URL)
-config.set_main_option("sqlalchemy.url", database_url)
+settings = get_settings()
+config.set_main_option("sqlalchemy.url", settings.database_url)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
