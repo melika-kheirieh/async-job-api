@@ -12,6 +12,34 @@ from app.services import JobNotFoundError, JobService
 logger = logging.getLogger(__name__)
 
 TERMINAL_STATUSES = {JobStatus.COMPLETED, JobStatus.FAILED}
+MAX_RETRIES = 3
+MAX_RETRY_COUNTDOWN_SECONDS = 30
+
+
+class RetryableJobError(Exception):
+    """Raised when a job failed because of a temporary condition."""
+
+
+class NonRetryableJobError(Exception):
+    """Raised when retrying the job would not make the failure go away."""
+
+
+def get_retry_countdown(retry_number: int) -> int:
+    return min(2**retry_number, MAX_RETRY_COUNTDOWN_SECONDS)
+
+
+def build_job_result(payload: dict) -> dict:
+    if payload.get("fail") is True:
+        raise NonRetryableJobError("Forced failure requested by payload")
+
+    if payload.get("transient_fail") is True:
+        raise RetryableJobError("Transient failure requested by payload")
+
+    return {
+        "processed": True,
+        "input_size": len(str(payload)),
+        "message": "Job completed successfully",
+    }
 
 
 def process_job_by_id(job_id: int, db: Session) -> None:
@@ -38,28 +66,74 @@ def process_job_by_id(job_id: int, db: Session) -> None:
     payload = job.payload
 
     try:
-        if payload.get("fail") is True:
-            raise ValueError("Forced failure requested by payload")
-
-        result = {
-            "processed": True,
-            "input_size": len(str(payload)),
-            "message": "Job completed successfully",
-        }
+        result = build_job_result(payload)
 
         service.mark_completed(job_id, result)
         logger.info("Job completed: job_id=%s", job_id)
 
+    except RetryableJobError:
+        logger.warning("Job failed with retryable error: job_id=%s", job_id)
+        raise
+
+    except NonRetryableJobError as exc:
+        service.mark_failed(job_id, str(exc))
+        logger.warning(
+            "Job failed with non-retryable error: job_id=%s error=%s",
+            job_id,
+            exc,
+        )
+
     except Exception as exc:
         service.mark_failed(job_id, str(exc))
-        logger.warning("Job failed: job_id=%s error=%s", job_id, exc)
+        logger.exception("Job failed with unexpected error: job_id=%s", job_id)
 
 
-@celery_app.task(name="process_job")
-def process_job(job_id: int) -> None:
+@celery_app.task(
+    name="process_job",
+    bind=True,
+    max_retries=MAX_RETRIES,
+)
+def process_job(self, job_id: int) -> None:
     db = SessionLocal()
 
     try:
         process_job_by_id(job_id, db)
+
+    except RetryableJobError as exc:
+        repository = JobRepository(db)
+        service = JobService(repository)
+
+        if self.request.retries >= MAX_RETRIES:
+            error_message = f"Retryable failure exceeded max retries: {exc}"
+
+            try:
+                service.mark_failed(job_id, error_message)
+            except JobNotFoundError:
+                logger.warning(
+                    "Could not mark retried job as failed because it was not found: job_id=%s",
+                    job_id,
+                )
+                return
+
+            logger.warning(
+                "Job failed after retries: job_id=%s retries=%s error=%s",
+                job_id,
+                self.request.retries,
+                exc,
+            )
+            return
+
+        countdown = get_retry_countdown(self.request.retries)
+
+        logger.warning(
+            "Retrying job: job_id=%s retry=%s countdown=%s error=%s",
+            job_id,
+            self.request.retries + 1,
+            countdown,
+            exc,
+        )
+
+        raise self.retry(exc=exc, countdown=countdown)
+
     finally:
         db.close()
