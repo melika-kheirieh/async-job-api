@@ -6,6 +6,10 @@ from app.repositories import JobRepository
 from app.schemas import JobCreateRequest
 
 
+STUCK_JOB_ERROR_MESSAGE = "Job timed out while running"
+DEFAULT_STUCK_JOB_TIMEOUT_MINUTES = 10
+
+
 class JobNotFoundError(Exception):
     def __init__(self, job_id: int):
         self.job_id = job_id
@@ -69,3 +73,23 @@ class JobService:
             raise JobNotFoundError(job_id)
 
         return job
+
+    def recover_stuck_jobs(
+        self,
+        timeout_minutes: int = DEFAULT_STUCK_JOB_TIMEOUT_MINUTES,
+    ) -> list[Job]:
+        stuck_jobs = self.repository.list_stuck_running_jobs(
+            timeout_minutes=timeout_minutes,
+        )
+        recovered_jobs: list[Job] = []
+
+        for job in stuck_jobs:
+            recovered_job = self.repository.mark_failed(
+                job_id=job.id,
+                error_message=STUCK_JOB_ERROR_MESSAGE,
+            )
+
+            if recovered_job is not None:
+                recovered_jobs.append(recovered_job)
+
+        return recovered_jobs
