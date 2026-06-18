@@ -8,7 +8,7 @@ from app.models import JobStatus
 from app.repositories import JobRepository
 from app.schemas import JobCreateRequest
 from app.services import JobService
-from app.tasks import process_job_by_id
+from app.tasks import RetryableJobError, get_retry_countdown, process_job_by_id
 
 
 @pytest.fixture()
@@ -84,6 +84,31 @@ def test_worker_marks_job_as_failed_when_payload_requests_failure(db_session):
     assert updated_job.failed_at is not None
 
 
+def test_worker_raises_retryable_error_for_transient_failure(db_session):
+    repository = JobRepository(db_session)
+    service = JobService(repository)
+
+    job = service.create_job(
+        JobCreateRequest(
+            payload={"text": "temporary problem", "transient_fail": True}
+        )
+    )
+
+    with pytest.raises(RetryableJobError):
+        process_job_by_id(job.id, db_session)
+
+    updated_job = service.get_job(job.id)
+
+    assert updated_job.status == JobStatus.RUNNING
+    assert updated_job.result is None
+    assert updated_job.error_message is None
+
+    assert updated_job.attempts == 1
+    assert updated_job.started_at is not None
+    assert updated_job.completed_at is None
+    assert updated_job.failed_at is None
+
+
 def test_worker_skips_terminal_completed_job(db_session):
     repository = JobRepository(db_session)
     service = JobService(repository)
@@ -111,3 +136,35 @@ def test_worker_skips_terminal_completed_job(db_session):
     assert updated_job.started_at is None
     assert updated_job.completed_at is not None
     assert updated_job.failed_at is None
+
+
+def test_worker_skips_terminal_failed_job(db_session):
+    repository = JobRepository(db_session)
+    service = JobService(repository)
+
+    job = service.create_job(
+        JobCreateRequest(payload={"text": "already failed"})
+    )
+
+    service.mark_failed(job.id, "Already failed")
+
+    process_job_by_id(job.id, db_session)
+
+    updated_job = service.get_job(job.id)
+
+    assert updated_job.status == JobStatus.FAILED
+    assert updated_job.result is None
+    assert updated_job.error_message == "Already failed"
+
+    assert updated_job.attempts == 0
+    assert updated_job.started_at is None
+    assert updated_job.completed_at is None
+    assert updated_job.failed_at is not None
+
+
+def test_retry_countdown_uses_exponential_backoff_with_cap():
+    assert get_retry_countdown(0) == 1
+    assert get_retry_countdown(1) == 2
+    assert get_retry_countdown(2) == 4
+    assert get_retry_countdown(3) == 8
+    assert get_retry_countdown(10) == 30
