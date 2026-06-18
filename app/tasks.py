@@ -4,14 +4,11 @@ from sqlalchemy.orm import Session
 
 from app.celery_app import celery_app
 from app.db import SessionLocal
-from app.models import JobStatus
 from app.repositories import JobRepository
 from app.services import JobNotFoundError, JobService
 
-
 logger = logging.getLogger(__name__)
 
-TERMINAL_STATUSES = {JobStatus.COMPLETED, JobStatus.FAILED}
 MAX_RETRIES = 3
 MAX_RETRY_COUNTDOWN_SECONDS = 30
 
@@ -47,27 +44,26 @@ def process_job_by_id(job_id: int, db: Session) -> None:
     service = JobService(repository)
 
     try:
-        job = service.get_job(job_id)
+        job = service.claim_job_for_processing(job_id)
     except JobNotFoundError:
         logger.warning("Job not found: job_id=%s", job_id)
         return
 
-    if job.status in TERMINAL_STATUSES:
+    if job is None:
+        skipped_job = service.get_job(job_id)
         logger.info(
-            "Skipping terminal job: job_id=%s status=%s",
+            "Skipping unclaimable job: job_id=%s status=%s",
             job_id,
-            job.status,
+            skipped_job.status,
         )
         return
 
     logger.info("Starting job processing: job_id=%s", job_id)
 
-    job = service.mark_running(job_id)
     payload = job.payload
 
     try:
         result = build_job_result(payload)
-
         service.mark_completed(job_id, result)
         logger.info("Job completed: job_id=%s", job_id)
 

@@ -332,3 +332,72 @@ def test_recover_stuck_jobs_leaves_terminal_jobs_untouched(job_service):
     recovered_jobs = job_service.recover_stuck_jobs(timeout_minutes=10)
 
     assert recovered_jobs == []
+
+def test_claim_queued_job_marks_it_as_running(job_service):
+    job = job_service.create_job(
+        JobCreateRequest(payload={"text": "hello backend"})
+    )
+
+    claimed_job = job_service.claim_job_for_processing(job.id)
+
+    assert claimed_job is not None
+    assert claimed_job.status == JobStatus.RUNNING
+    assert claimed_job.attempts == 1
+    assert claimed_job.started_at is not None
+    assert claimed_job.completed_at is None
+    assert claimed_job.failed_at is None
+    assert claimed_job.result is None
+    assert claimed_job.error_message is None
+
+
+def test_claim_running_job_returns_none_without_incrementing_attempts(job_service):
+    job = job_service.create_job(
+        JobCreateRequest(payload={"text": "hello backend"})
+    )
+    running_job = job_service.mark_running(job.id)
+
+    claimed_job = job_service.claim_job_for_processing(job.id)
+
+    updated_job = job_service.get_job(job.id)
+
+    assert claimed_job is None
+    assert updated_job.status == JobStatus.RUNNING
+    assert updated_job.attempts == running_job.attempts
+
+
+def test_claim_completed_job_returns_none_without_changing_state(job_service):
+    job = job_service.create_job(
+        JobCreateRequest(payload={"text": "already completed"})
+    )
+    result = {"processed": True}
+    job_service.mark_completed(job.id, result)
+
+    claimed_job = job_service.claim_job_for_processing(job.id)
+
+    updated_job = job_service.get_job(job.id)
+
+    assert claimed_job is None
+    assert updated_job.status == JobStatus.COMPLETED
+    assert updated_job.result == result
+    assert updated_job.attempts == 0
+
+
+def test_claim_failed_job_returns_none_without_changing_state(job_service):
+    job = job_service.create_job(
+        JobCreateRequest(payload={"text": "already failed"})
+    )
+    job_service.mark_failed(job.id, "Already failed")
+
+    claimed_job = job_service.claim_job_for_processing(job.id)
+
+    updated_job = job_service.get_job(job.id)
+
+    assert claimed_job is None
+    assert updated_job.status == JobStatus.FAILED
+    assert updated_job.error_message == "Already failed"
+    assert updated_job.attempts == 0
+
+
+def test_claim_missing_job_raises_not_found(job_service):
+    with pytest.raises(JobNotFoundError):
+        job_service.claim_job_for_processing(999999)

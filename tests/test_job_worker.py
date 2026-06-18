@@ -168,3 +168,24 @@ def test_retry_countdown_uses_exponential_backoff_with_cap():
     assert get_retry_countdown(2) == 4
     assert get_retry_countdown(3) == 8
     assert get_retry_countdown(10) == 30
+
+def test_worker_skips_running_job_without_incrementing_attempts(db_session):
+    repository = JobRepository(db_session)
+    service = JobService(repository)
+
+    job = service.create_job(
+        JobCreateRequest(payload={"text": "already running"})
+    )
+    running_job = service.mark_running(job.id)
+
+    process_job_by_id(job.id, db_session)
+
+    updated_job = service.get_job(job.id)
+
+    assert updated_job.status == JobStatus.RUNNING
+    assert updated_job.result is None
+    assert updated_job.error_message is None
+    assert updated_job.attempts == running_job.attempts
+    assert updated_job.started_at is not None
+    assert updated_job.completed_at is None
+    assert updated_job.failed_at is None

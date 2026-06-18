@@ -1,10 +1,12 @@
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.models import Job, JobStatus
 
+CLAIMABLE_JOB_STATUSES = (JobStatus.QUEUED,)
 
 class JobRepository:
     def __init__(self, db: Session) -> None:
@@ -52,6 +54,36 @@ class JobRepository:
             .all()
         )
 
+    def claim_job_for_processing(self, job_id: int) -> Job | None:
+        now = datetime.now(UTC)
+
+        result = self.db.execute(
+            update(Job)
+            .where(Job.id == job_id)
+            .where(Job.status.in_(CLAIMABLE_JOB_STATUSES))
+            .values(
+                status=JobStatus.RUNNING,
+                attempts=Job.attempts + 1,
+                started_at=now,
+                completed_at=None,
+                failed_at=None,
+                error_message=None,
+                result=None,
+            )
+        )
+
+        if result.rowcount == 0:
+            self.db.rollback()
+            return None
+
+        self.db.commit()
+
+        claimed_job = self.get_by_id(job_id)
+        if claimed_job is None:
+            raise RuntimeError("Claimed job disappeared before it could be loaded.")
+
+        return claimed_job
+    
     def mark_running(self, job_id: int) -> Job | None:
         job = self.get_by_id(job_id)
 
