@@ -10,10 +10,16 @@ class JobRepository:
     def __init__(self, db: Session) -> None:
         self.db = db
 
-    def create(self, payload: dict[str, Any], status: JobStatus = JobStatus.QUEUED) -> Job:
+    def create(
+        self,
+        payload: dict[str, Any],
+        status: JobStatus = JobStatus.QUEUED,
+        idempotency_key: str | None = None,
+    ) -> Job:
         job = Job(
             payload=payload,
             status=status,
+            idempotency_key=idempotency_key,
         )
 
         self.db.add(job)
@@ -22,8 +28,18 @@ class JobRepository:
 
         return job
 
+    def rollback(self) -> None:
+        self.db.rollback()
+
     def get_by_id(self, job_id: int) -> Job | None:
         return self.db.get(Job, job_id)
+
+    def get_by_idempotency_key(self, idempotency_key: str) -> Job | None:
+        return (
+            self.db.query(Job)
+            .filter(Job.idempotency_key == idempotency_key)
+            .one_or_none()
+        )
 
     def list_stuck_running_jobs(self, timeout_minutes: int) -> list[Job]:
         cutoff = datetime.now(UTC) - timedelta(minutes=timeout_minutes)

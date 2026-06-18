@@ -1,6 +1,8 @@
 from collections.abc import Callable
 from typing import Any
 
+from sqlalchemy.exc import IntegrityError
+
 from app.models import Job, JobStatus
 from app.repositories import JobRepository
 from app.schemas import JobCreateRequest
@@ -26,10 +28,34 @@ class JobService:
         self.enqueue_job = enqueue_job
 
     def create_job(self, job_create: JobCreateRequest) -> Job:
-        job = self.repository.create(
-            payload=job_create.payload,
-            status=JobStatus.QUEUED,
-        )
+        if job_create.idempotency_key is not None:
+            existing_job = self.repository.get_by_idempotency_key(
+                job_create.idempotency_key,
+            )
+
+            if existing_job is not None:
+                return existing_job
+
+        try:
+            job = self.repository.create(
+                payload=job_create.payload,
+                status=JobStatus.QUEUED,
+                idempotency_key=job_create.idempotency_key,
+            )
+        except IntegrityError:
+            self.repository.rollback()
+
+            if job_create.idempotency_key is None:
+                raise
+
+            existing_job = self.repository.get_by_idempotency_key(
+                job_create.idempotency_key,
+            )
+
+            if existing_job is None:
+                raise
+
+            return existing_job
 
         if self.enqueue_job is not None:
             self.enqueue_job(job.id)
