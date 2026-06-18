@@ -1,6 +1,6 @@
 # Async Job API
 
-A small FastAPI + Celery backend system for handling asynchronous jobs with database-backed status tracking, worker execution, failure handling, retry behavior, Docker Compose, migrations, and tests.
+A small FastAPI + Celery backend system for handling asynchronous jobs with database-backed status tracking, worker execution, failure handling, retry behavior, stuck-job recovery, Docker Compose, migrations, and tests.
 
 ## Overview
 
@@ -34,6 +34,7 @@ This project focuses on the core backend workflow behind asynchronous job proces
 * failure visibility through persisted state
 * retryable vs non-retryable failure handling
 * limited retry behavior with exponential backoff
+* basic stuck-job recovery
 * duplicate execution awareness
 * service/repository boundaries
 * PostgreSQL-based Docker runtime
@@ -43,7 +44,7 @@ This project focuses on the core backend workflow behind asynchronous job proces
 
 The goal is not to build a full production job platform.
 
-The goal is to show a clean, explainable backend workflow for submitting, processing, tracking, retrying, and debugging background jobs.
+The goal is to show a clean, explainable backend workflow for submitting, processing, tracking, retrying, recovering, and debugging background jobs.
 
 ---
 
@@ -122,11 +123,13 @@ It creates jobs, reads jobs, and applies state transitions such as:
 * `completed`
 * `failed`
 
+It also contains a basic stuck-job recovery path for jobs that remain in `running` longer than a configured timeout.
+
 ### Repository
 
 The repository handles database access.
 
-It creates job records, loads jobs by id, and persists status, result, error information, attempts, and lifecycle timestamps.
+It creates job records, loads jobs by id, finds stuck running jobs, and persists status, result, error information, attempts, and lifecycle timestamps.
 
 ### Worker
 
@@ -182,6 +185,18 @@ The worker distinguishes between retryable and non-retryable failures.
 
 A logical failure should not be retried blindly. A transient failure can be retried with a limited retry count and exponential backoff.
 
+### Stuck jobs are made visible
+
+A worker may crash after marking a job as `running` but before marking it as `completed` or `failed`.
+
+To avoid leaving such jobs in `running` forever, the service includes a basic stuck-job recovery path.
+
+Jobs that remain `running` longer than a timeout threshold can be marked as `failed` with a clear timeout error message.
+
+By default, the stuck-job timeout is 10 minutes.
+
+This is intentionally a simple recovery mechanism, not a full scheduler or requeue system.
+
 ### Duplicate execution awareness
 
 Broker-based systems may deliver or execute a task more than once.
@@ -201,6 +216,7 @@ queued → running → completed
 queued → running → failed
 queued → running → retry → running → completed
 queued → running → retry → running → failed
+queued → running → stuck recovery → failed
 ```
 
 | Status      | Meaning                                             |
@@ -395,6 +411,35 @@ The retry behavior is intentionally limited. The project does not claim producti
 
 ---
 
+## Stuck Job Recovery
+
+A worker can fail after marking a job as `running` but before marking it as `completed` or `failed`.
+
+In that case, the job may remain stuck in the `running` state forever.
+
+To make this failure mode visible, the service includes a simple recovery path:
+
+* find jobs with `status = running`
+* check whether `started_at` is older than a timeout threshold
+* mark those jobs as `failed`
+* store a clear timeout error message
+
+By default, jobs that remain `running` for more than 10 minutes are considered stuck.
+
+The service method can also receive an explicit timeout value:
+
+```python
+recover_stuck_jobs(timeout_minutes=10)
+```
+
+This is intentionally a basic recovery mechanism.
+
+It does not automatically requeue jobs, run on a schedule, or implement distributed locking.
+
+In a production system, this kind of recovery would typically be executed by a scheduled reconciliation job and would need stronger concurrency controls.
+
+---
+
 ## Worker Logging
 
 The worker logs key execution events:
@@ -470,17 +515,18 @@ The project includes a few reliability-oriented behaviors:
 * lifecycle metadata
 * limited retry handling for retryable failures
 * exponential backoff for retry attempts
+* basic stuck-job recovery
 * testable worker-processing logic without requiring a live broker in unit tests
 
 However, this project does not fully solve all distributed job-processing failure modes.
 
 For example:
 
-* a worker may crash while processing a job,
 * a broker may redeliver a task,
 * a task may run more than once,
-* a job may remain stuck in `running`,
-* sensitive side effects would need stronger idempotency guarantees.
+* a job may be recovered too early if the timeout is misconfigured,
+* sensitive side effects would need stronger idempotency guarantees,
+* automatic scheduled recovery would need stronger operational safeguards.
 
 The project is production-aware, but not a full production-grade job platform.
 
@@ -733,6 +779,9 @@ The current test suite covers core API, service, and worker-processing behavior,
 * failed transition
 * missing-job service errors
 * enqueue boundary behavior without requiring a real broker
+* stuck-job recovery for old running jobs
+* stuck-job recovery leaving recent running jobs untouched
+* stuck-job recovery leaving terminal jobs untouched
 * worker processing success path
 * worker processing non-retryable failure path
 * worker processing retryable failure path
@@ -772,6 +821,7 @@ Included in this version:
 * failure visibility
 * lifecycle metadata
 * limited retry handling with backoff
+* basic stuck-job recovery
 * duplicate execution awareness through terminal-status checks
 * API, service, and worker-processing tests
 * GitHub Actions CI
@@ -785,7 +835,8 @@ Out of scope for this version:
 * distributed locking
 * dead-letter queues
 * production-grade idempotency
-* stuck job recovery
+* automatic scheduled recovery
+* automatic requeue for stuck jobs
 * multiple job types
 * queue priorities
 * rate limiting
@@ -799,7 +850,8 @@ This scope is intentional: the project focuses on the core async lifecycle and s
 
 Possible next steps:
 
-* add stuck job cleanup or reconciliation
+* run stuck-job recovery from a scheduled reconciliation task
+* add optional requeue behavior for carefully selected stuck jobs
 * add idempotency keys for duplicate job creation
 * add stronger side-effect protection
 * add retry status or richer retry metadata
@@ -820,10 +872,12 @@ The FastAPI API creates a job in the database with `queued` status and enqueues 
 
 The worker receives only the `job_id`, reads the job from the database, skips terminal jobs, marks active jobs as `running`, performs simplified processing, and then marks them as `completed` or `failed`.
 
+The service also includes a basic stuck-job recovery path that can mark old `running` jobs as `failed` with a clear timeout error message.
+
 The database is the source of truth for job status, payload, result, error information, attempts, and lifecycle metadata.
 
 Redis is used only as the broker.
 
-The project also includes non-retryable failure handling, limited retry behavior with exponential backoff, lightweight worker logging, a testable worker-processing function, CI, PostgreSQL Docker runtime, Alembic migrations, and a terminal-status guard to avoid blindly re-processing jobs that are already completed or failed.
+The project also includes non-retryable failure handling, limited retry behavior with exponential backoff, lightweight worker logging, a testable worker-processing function, CI, PostgreSQL Docker runtime, Alembic migrations, basic stuck-job recovery, and a terminal-status guard to avoid blindly re-processing jobs that are already completed or failed.
 
 This is not full production-grade idempotency or exactly-once processing, but it shows the reliability concerns and where stronger patterns would be needed.

@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -24,6 +24,17 @@ class JobRepository:
 
     def get_by_id(self, job_id: int) -> Job | None:
         return self.db.get(Job, job_id)
+
+    def list_stuck_running_jobs(self, timeout_minutes: int) -> list[Job]:
+        cutoff = datetime.now(UTC) - timedelta(minutes=timeout_minutes)
+
+        return (
+            self.db.query(Job)
+            .filter(Job.status == JobStatus.RUNNING)
+            .filter(Job.started_at.is_not(None))
+            .filter(Job.started_at < cutoff)
+            .all()
+        )
 
     def mark_running(self, job_id: int) -> Job | None:
         job = self.get_by_id(job_id)

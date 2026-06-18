@@ -1,3 +1,5 @@
+from datetime import UTC, datetime, timedelta
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -7,7 +9,7 @@ from app.db import Base
 from app.models import JobStatus
 from app.repositories import JobRepository
 from app.schemas import JobCreateRequest
-from app.services import JobNotFoundError, JobService
+from app.services import STUCK_JOB_ERROR_MESSAGE, JobNotFoundError, JobService
 
 
 @pytest.fixture()
@@ -166,3 +168,84 @@ def test_create_job_calls_enqueue_with_created_job_id():
     finally:
         db.close()
         Base.metadata.drop_all(bind=test_engine)
+
+
+def test_recover_stuck_jobs_marks_old_running_job_as_failed(job_service):
+    job = job_service.create_job(
+        JobCreateRequest(payload={"text": "old running job"})
+    )
+
+    running_job = job_service.mark_running(job.id)
+    running_job.started_at = datetime.now(UTC) - timedelta(minutes=30)
+    job_service.repository.db.commit()
+
+    recovered_jobs = job_service.recover_stuck_jobs(timeout_minutes=10)
+
+    assert len(recovered_jobs) == 1
+    assert recovered_jobs[0].id == job.id
+    assert recovered_jobs[0].status == JobStatus.FAILED
+    assert recovered_jobs[0].error_message == STUCK_JOB_ERROR_MESSAGE
+    assert recovered_jobs[0].failed_at is not None
+
+    updated_job = job_service.get_job(job.id)
+
+    assert updated_job.status == JobStatus.FAILED
+    assert updated_job.error_message == STUCK_JOB_ERROR_MESSAGE
+    assert updated_job.failed_at is not None
+
+
+def test_recover_stuck_jobs_leaves_recent_running_job_untouched(job_service):
+    job = job_service.create_job(
+        JobCreateRequest(payload={"text": "recent running job"})
+    )
+
+    job_service.mark_running(job.id)
+
+    recovered_jobs = job_service.recover_stuck_jobs(timeout_minutes=10)
+
+    assert recovered_jobs == []
+
+    updated_job = job_service.get_job(job.id)
+
+    assert updated_job.status == JobStatus.RUNNING
+    assert updated_job.error_message is None
+    assert updated_job.failed_at is None
+
+
+def test_recover_stuck_jobs_leaves_terminal_jobs_untouched(job_service):
+    completed_job = job_service.create_job(
+        JobCreateRequest(payload={"text": "completed job"})
+    )
+    job_service.mark_running(completed_job.id)
+    job_service.mark_completed(
+        completed_job.id,
+        {
+            "processed": True,
+            "message": "Job completed successfully",
+        },
+    )
+
+    failed_job = job_service.create_job(
+        JobCreateRequest(payload={"text": "failed job"})
+    )
+    job_service.mark_running(failed_job.id)
+    job_service.mark_failed(
+        failed_job.id,
+        "Already failed",
+    )
+
+    recovered_jobs = job_service.recover_stuck_jobs(timeout_minutes=10)
+
+    assert recovered_jobs == []
+
+    updated_completed_job = job_service.get_job(completed_job.id)
+    assert updated_completed_job.status == JobStatus.COMPLETED
+    assert updated_completed_job.result == {
+        "processed": True,
+        "message": "Job completed successfully",
+    }
+    assert updated_completed_job.error_message is None
+
+    updated_failed_job = job_service.get_job(failed_job.id)
+    assert updated_failed_job.status == JobStatus.FAILED
+    assert updated_failed_job.error_message == "Already failed"
