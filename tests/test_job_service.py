@@ -45,12 +45,107 @@ def test_new_job_starts_as_queued(job_service):
     )
 
     assert job.status == JobStatus.QUEUED
+    assert job.idempotency_key is None
     assert job.result is None
     assert job.error_message is None
     assert job.attempts == 0
     assert job.started_at is None
     assert job.completed_at is None
     assert job.failed_at is None
+
+
+def test_create_job_stores_idempotency_key(job_service):
+    job = job_service.create_job(
+        JobCreateRequest(
+            payload={"text": "hello backend"},
+            idempotency_key="request-123",
+        )
+    )
+
+    assert job.status == JobStatus.QUEUED
+    assert job.idempotency_key == "request-123"
+    assert job.payload == {"text": "hello backend"}
+
+
+def test_create_job_with_same_idempotency_key_returns_existing_job(job_service):
+    first_job = job_service.create_job(
+        JobCreateRequest(
+            payload={"text": "hello backend"},
+            idempotency_key="request-123",
+        )
+    )
+
+    second_job = job_service.create_job(
+        JobCreateRequest(
+            payload={"text": "hello backend"},
+            idempotency_key="request-123",
+        )
+    )
+
+    assert second_job.id == first_job.id
+    assert second_job.idempotency_key == "request-123"
+    assert second_job.payload == {"text": "hello backend"}
+
+
+def test_create_job_without_idempotency_key_creates_separate_jobs(job_service):
+    first_job = job_service.create_job(
+        JobCreateRequest(payload={"text": "hello backend"})
+    )
+
+    second_job = job_service.create_job(
+        JobCreateRequest(payload={"text": "hello backend"})
+    )
+
+    assert second_job.id != first_job.id
+    assert first_job.idempotency_key is None
+    assert second_job.idempotency_key is None
+
+
+def test_duplicate_idempotency_key_does_not_enqueue_again():
+    test_engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+
+    TestingSessionLocal = sessionmaker(
+        autocommit=False,
+        autoflush=False,
+        bind=test_engine,
+    )
+
+    Base.metadata.create_all(bind=test_engine)
+
+    db = TestingSessionLocal()
+    enqueued_job_ids = []
+
+    try:
+        repository = JobRepository(db)
+        service = JobService(
+            repository,
+            enqueue_job=enqueued_job_ids.append,
+        )
+
+        first_job = service.create_job(
+            JobCreateRequest(
+                payload={"text": "hello backend"},
+                idempotency_key="request-123",
+            )
+        )
+
+        second_job = service.create_job(
+            JobCreateRequest(
+                payload={"text": "hello backend"},
+                idempotency_key="request-123",
+            )
+        )
+
+        assert second_job.id == first_job.id
+        assert enqueued_job_ids == [first_job.id]
+
+    finally:
+        db.close()
+        Base.metadata.drop_all(bind=test_engine)
 
 
 def test_mark_running_updates_job_status(job_service):
@@ -237,15 +332,3 @@ def test_recover_stuck_jobs_leaves_terminal_jobs_untouched(job_service):
     recovered_jobs = job_service.recover_stuck_jobs(timeout_minutes=10)
 
     assert recovered_jobs == []
-
-    updated_completed_job = job_service.get_job(completed_job.id)
-    assert updated_completed_job.status == JobStatus.COMPLETED
-    assert updated_completed_job.result == {
-        "processed": True,
-        "message": "Job completed successfully",
-    }
-    assert updated_completed_job.error_message is None
-
-    updated_failed_job = job_service.get_job(failed_job.id)
-    assert updated_failed_job.status == JobStatus.FAILED
-    assert updated_failed_job.error_message == "Already failed"

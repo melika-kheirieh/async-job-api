@@ -64,6 +64,7 @@ def test_create_job_returns_queued_status(client):
 
     assert data["id"] is not None
     assert data["status"] == "queued"
+    assert data["idempotency_key"] is None
     assert data["payload"] == {"text": "hello backend"}
     assert data["result"] is None
     assert data["error_message"] is None
@@ -77,10 +78,102 @@ def test_create_job_returns_queued_status(client):
     assert data["updated_at"] is not None
 
 
+def test_create_job_with_idempotency_key_returns_key(client):
+    response = client.post(
+        "/jobs",
+        json={
+            "payload": {"text": "hello backend"},
+            "idempotency_key": "request-123",
+        },
+    )
+
+    assert response.status_code == 201
+
+    data = response.json()
+
+    assert data["id"] is not None
+    assert data["status"] == "queued"
+    assert data["idempotency_key"] == "request-123"
+    assert data["payload"] == {"text": "hello backend"}
+    assert data["result"] is None
+    assert data["error_message"] is None
+
+    assert data["attempts"] == 0
+    assert data["started_at"] is None
+    assert data["completed_at"] is None
+    assert data["failed_at"] is None
+
+    assert data["created_at"] is not None
+    assert data["updated_at"] is not None
+
+
+def test_create_job_with_duplicate_idempotency_key_returns_existing_job(client):
+    first_response = client.post(
+        "/jobs",
+        json={
+            "payload": {"text": "hello backend"},
+            "idempotency_key": "request-123",
+        },
+    )
+
+    second_response = client.post(
+        "/jobs",
+        json={
+            "payload": {"text": "hello backend"},
+            "idempotency_key": "request-123",
+        },
+    )
+
+    assert first_response.status_code == 201
+    assert second_response.status_code == 201
+
+    first_data = first_response.json()
+    second_data = second_response.json()
+
+    assert second_data["id"] == first_data["id"]
+    assert second_data["status"] == "queued"
+    assert second_data["idempotency_key"] == "request-123"
+    assert second_data["payload"] == {"text": "hello backend"}
+
+
+def test_create_job_without_idempotency_key_creates_separate_jobs(client):
+    first_response = client.post(
+        "/jobs",
+        json={"payload": {"text": "hello backend"}},
+    )
+
+    second_response = client.post(
+        "/jobs",
+        json={"payload": {"text": "hello backend"}},
+    )
+
+    assert first_response.status_code == 201
+    assert second_response.status_code == 201
+
+    first_data = first_response.json()
+    second_data = second_response.json()
+
+    assert second_data["id"] != first_data["id"]
+    assert first_data["idempotency_key"] is None
+    assert second_data["idempotency_key"] is None
+
+
 def test_create_job_rejects_missing_payload(client):
     response = client.post(
         "/jobs",
         json={"text": "hello backend"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_create_job_rejects_empty_idempotency_key(client):
+    response = client.post(
+        "/jobs",
+        json={
+            "payload": {"text": "hello backend"},
+            "idempotency_key": "",
+        },
     )
 
     assert response.status_code == 422
@@ -102,6 +195,7 @@ def test_get_job_returns_existing_job(client):
 
     assert data["id"] == job_id
     assert data["status"] == "queued"
+    assert data["idempotency_key"] is None
     assert data["payload"] == {"text": "hello backend"}
     assert data["result"] is None
     assert data["error_message"] is None

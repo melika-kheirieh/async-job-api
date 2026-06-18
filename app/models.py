@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import DateTime, Enum, Integer, JSON, Text
+from sqlalchemy import DateTime, Enum, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -18,12 +18,21 @@ class JobStatus(StrEnum):
 class Job(Base):
     __tablename__ = "jobs"
 
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_jobs_idempotency_key"),
+    )
+
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
 
     status: Mapped[JobStatus] = mapped_column(
         Enum(JobStatus),
         default=JobStatus.QUEUED,
         nullable=False,
+    )
+
+    idempotency_key: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
     )
 
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
@@ -56,4 +65,3 @@ class Job(Base):
         onupdate=lambda: datetime.now(UTC),
         nullable=False,
     )
-    
