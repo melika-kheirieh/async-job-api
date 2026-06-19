@@ -6,7 +6,6 @@ from sqlalchemy.orm import Session
 
 from app.models import Job, JobStatus
 
-
 CLAIMABLE_JOB_STATUSES = (JobStatus.QUEUED, JobStatus.RETRYING)
 
 
@@ -45,6 +44,32 @@ class JobRepository:
             .one_or_none()
         )
 
+    def list_jobs(
+        self,
+        status: JobStatus | None = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> list[Job]:
+        query = self.db.query(Job)
+
+        if status is not None:
+            query = query.filter(Job.status == status)
+
+        return (
+            query.order_by(Job.created_at.desc(), Job.id.desc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+
+    def count_jobs(self, status: JobStatus | None = None) -> int:
+        query = self.db.query(Job)
+
+        if status is not None:
+            query = query.filter(Job.status == status)
+
+        return query.count()
+
     def list_stuck_running_jobs(self, timeout_minutes: int) -> list[Job]:
         cutoff = datetime.now(UTC) - timedelta(minutes=timeout_minutes)
 
@@ -81,7 +106,6 @@ class JobRepository:
         self.db.commit()
 
         claimed_job = self.get_by_id(job_id)
-
         if claimed_job is None:
             raise RuntimeError("Claimed job disappeared before it could be loaded.")
 
@@ -89,7 +113,6 @@ class JobRepository:
 
     def mark_running(self, job_id: int) -> Job | None:
         job = self.get_by_id(job_id)
-
         if job is None:
             return None
 
@@ -108,7 +131,6 @@ class JobRepository:
 
     def mark_retrying(self, job_id: int, error_message: str) -> Job | None:
         job = self.get_by_id(job_id)
-
         if job is None:
             return None
 
@@ -125,7 +147,6 @@ class JobRepository:
 
     def mark_completed(self, job_id: int, result: dict[str, Any]) -> Job | None:
         job = self.get_by_id(job_id)
-
         if job is None:
             return None
 
@@ -142,7 +163,6 @@ class JobRepository:
 
     def mark_failed(self, job_id: int, error_message: str) -> Job | None:
         job = self.get_by_id(job_id)
-
         if job is None:
             return None
 
