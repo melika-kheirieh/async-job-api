@@ -7,7 +7,6 @@ from app.models import Job, JobStatus
 from app.repositories import JobRepository
 from app.schemas import JobCreateRequest
 
-
 STUCK_JOB_ERROR_MESSAGE = "Job timed out while running"
 DEFAULT_STUCK_JOB_TIMEOUT_MINUTES = 10
 
@@ -32,7 +31,6 @@ class JobService:
             existing_job = self.repository.get_by_idempotency_key(
                 job_create.idempotency_key,
             )
-
             if existing_job is not None:
                 return existing_job
 
@@ -51,7 +49,6 @@ class JobService:
             existing_job = self.repository.get_by_idempotency_key(
                 job_create.idempotency_key,
             )
-
             if existing_job is None:
                 raise
 
@@ -64,20 +61,32 @@ class JobService:
 
     def get_job(self, job_id: int) -> Job:
         job = self.repository.get_by_id(job_id)
-
         if job is None:
             raise JobNotFoundError(job_id)
 
         return job
 
+    def list_jobs(
+        self,
+        status: JobStatus | None = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> tuple[list[Job], int]:
+        jobs = self.repository.list_jobs(
+            status=status,
+            limit=limit,
+            offset=offset,
+        )
+        count = self.repository.count_jobs(status=status)
+
+        return jobs, count
+
     def claim_job_for_processing(self, job_id: int) -> Job | None:
         job = self.repository.claim_job_for_processing(job_id)
-
         if job is not None:
             return job
 
         existing_job = self.repository.get_by_id(job_id)
-
         if existing_job is None:
             raise JobNotFoundError(job_id)
 
@@ -85,7 +94,6 @@ class JobService:
 
     def mark_running(self, job_id: int) -> Job:
         job = self.repository.mark_running(job_id)
-
         if job is None:
             raise JobNotFoundError(job_id)
 
@@ -96,7 +104,6 @@ class JobService:
             job_id=job_id,
             error_message=error_message,
         )
-
         if job is None:
             raise JobNotFoundError(job_id)
 
@@ -107,7 +114,6 @@ class JobService:
             job_id=job_id,
             result=result,
         )
-
         if job is None:
             raise JobNotFoundError(job_id)
 
@@ -118,7 +124,6 @@ class JobService:
             job_id=job_id,
             error_message=error_message,
         )
-
         if job is None:
             raise JobNotFoundError(job_id)
 
@@ -139,7 +144,6 @@ class JobService:
                 job_id=job.id,
                 error_message=STUCK_JOB_ERROR_MESSAGE,
             )
-
             if recovered_job is not None:
                 recovered_jobs.append(recovered_job)
 
