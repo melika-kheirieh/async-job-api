@@ -212,3 +212,33 @@ def test_retry_countdown_uses_exponential_backoff_with_cap():
     assert get_retry_countdown(2) == 4
     assert get_retry_countdown(3) == 8
     assert get_retry_countdown(10) == 30
+
+
+def test_duplicate_delivery_after_completed_job_does_not_reprocess(db_session):
+    repository = JobRepository(db_session)
+    service = JobService(repository)
+
+    job = service.create_job(
+        JobCreateRequest(payload={"text": "hello backend"})
+    )
+
+    process_job_by_id(job.id, db_session)
+    completed_job = service.get_job(job.id)
+
+    assert completed_job.status == JobStatus.COMPLETED
+    assert completed_job.attempts == 1
+    assert completed_job.result == {
+        "processed": True,
+        "input_size": len(str({"text": "hello backend"})),
+        "message": "Job completed successfully",
+    }
+
+    process_job_by_id(job.id, db_session)
+    updated_job = service.get_job(job.id)
+
+    assert updated_job.status == JobStatus.COMPLETED
+    assert updated_job.result == completed_job.result
+    assert updated_job.error_message is None
+    assert updated_job.attempts == 1
+    assert updated_job.completed_at == completed_job.completed_at
+    assert updated_job.failed_at is None
