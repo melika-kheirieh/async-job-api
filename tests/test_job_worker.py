@@ -225,20 +225,29 @@ def test_duplicate_delivery_after_completed_job_does_not_reprocess(db_session):
     process_job_by_id(job.id, db_session)
     completed_job = service.get_job(job.id)
 
-    assert completed_job.status == JobStatus.COMPLETED
-    assert completed_job.attempts == 1
-    assert completed_job.result == {
+    expected_result = {
         "processed": True,
         "input_size": len(str({"text": "hello backend"})),
         "message": "Job completed successfully",
     }
 
+    assert completed_job.status == JobStatus.COMPLETED
+    assert completed_job.attempts == 1
+    assert completed_job.result == expected_result
+    assert completed_job.error_message is None
+    assert completed_job.completed_at is not None
+    assert completed_job.failed_at is None
+
+    completed_result = completed_job.result
+    completed_at = completed_job.completed_at
+    attempts = completed_job.attempts
+
     process_job_by_id(job.id, db_session)
     updated_job = service.get_job(job.id)
 
     assert updated_job.status == JobStatus.COMPLETED
-    assert updated_job.result == completed_job.result
+    assert updated_job.result == completed_result
     assert updated_job.error_message is None
-    assert updated_job.attempts == 1
-    assert updated_job.completed_at == completed_job.completed_at
+    assert updated_job.attempts == attempts
+    assert updated_job.completed_at == completed_at
     assert updated_job.failed_at is None
