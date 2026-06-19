@@ -55,7 +55,6 @@ def test_worker_marks_job_as_completed(db_session):
         "message": "Job completed successfully",
     }
     assert updated_job.error_message is None
-
     assert updated_job.attempts == 1
     assert updated_job.started_at is not None
     assert updated_job.completed_at is not None
@@ -77,7 +76,6 @@ def test_worker_marks_job_as_failed_when_payload_requests_failure(db_session):
     assert updated_job.status == JobStatus.FAILED
     assert updated_job.result is None
     assert updated_job.error_message == "Forced failure requested by payload"
-
     assert updated_job.attempts == 1
     assert updated_job.started_at is not None
     assert updated_job.completed_at is None
@@ -102,7 +100,6 @@ def test_worker_raises_retryable_error_for_transient_failure(db_session):
     assert updated_job.status == JobStatus.RUNNING
     assert updated_job.result is None
     assert updated_job.error_message is None
-
     assert updated_job.attempts == 1
     assert updated_job.started_at is not None
     assert updated_job.completed_at is None
@@ -116,12 +113,10 @@ def test_worker_skips_terminal_completed_job(db_session):
     job = service.create_job(
         JobCreateRequest(payload={"text": "already done"})
     )
-
     original_result = {
         "processed": True,
         "message": "Already completed",
     }
-
     service.mark_completed(job.id, original_result)
 
     process_job_by_id(job.id, db_session)
@@ -131,7 +126,6 @@ def test_worker_skips_terminal_completed_job(db_session):
     assert updated_job.status == JobStatus.COMPLETED
     assert updated_job.result == original_result
     assert updated_job.error_message is None
-
     assert updated_job.attempts == 0
     assert updated_job.started_at is None
     assert updated_job.completed_at is not None
@@ -145,7 +139,6 @@ def test_worker_skips_terminal_failed_job(db_session):
     job = service.create_job(
         JobCreateRequest(payload={"text": "already failed"})
     )
-
     service.mark_failed(job.id, "Already failed")
 
     process_job_by_id(job.id, db_session)
@@ -155,11 +148,32 @@ def test_worker_skips_terminal_failed_job(db_session):
     assert updated_job.status == JobStatus.FAILED
     assert updated_job.result is None
     assert updated_job.error_message == "Already failed"
-
     assert updated_job.attempts == 0
     assert updated_job.started_at is None
     assert updated_job.completed_at is None
     assert updated_job.failed_at is not None
+
+
+def test_worker_skips_running_job_without_incrementing_attempts(db_session):
+    repository = JobRepository(db_session)
+    service = JobService(repository)
+
+    job = service.create_job(
+        JobCreateRequest(payload={"text": "already running"})
+    )
+    running_job = service.mark_running(job.id)
+
+    process_job_by_id(job.id, db_session)
+
+    updated_job = service.get_job(job.id)
+
+    assert updated_job.status == JobStatus.RUNNING
+    assert updated_job.result is None
+    assert updated_job.error_message is None
+    assert updated_job.attempts == running_job.attempts
+    assert updated_job.started_at is not None
+    assert updated_job.completed_at is None
+    assert updated_job.failed_at is None
 
 
 def test_retry_countdown_uses_exponential_backoff_with_cap():

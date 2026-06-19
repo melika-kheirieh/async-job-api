@@ -74,7 +74,6 @@ def test_create_job_with_same_idempotency_key_returns_existing_job(job_service):
             idempotency_key="request-123",
         )
     )
-
     second_job = job_service.create_job(
         JobCreateRequest(
             payload={"text": "hello backend"},
@@ -91,7 +90,6 @@ def test_create_job_without_idempotency_key_creates_separate_jobs(job_service):
     first_job = job_service.create_job(
         JobCreateRequest(payload={"text": "hello backend"})
     )
-
     second_job = job_service.create_job(
         JobCreateRequest(payload={"text": "hello backend"})
     )
@@ -132,7 +130,6 @@ def test_duplicate_idempotency_key_does_not_enqueue_again():
                 idempotency_key="request-123",
             )
         )
-
         second_job = service.create_job(
             JobCreateRequest(
                 payload={"text": "hello backend"},
@@ -164,11 +161,80 @@ def test_mark_running_updates_job_status(job_service):
     assert updated_job.failed_at is None
 
 
-def test_mark_completed_stores_result(job_service):
+def test_claim_queued_job_marks_it_as_running(job_service):
     job = job_service.create_job(
         JobCreateRequest(payload={"text": "hello backend"})
     )
 
+    claimed_job = job_service.claim_job_for_processing(job.id)
+
+    assert claimed_job is not None
+    assert claimed_job.status == JobStatus.RUNNING
+    assert claimed_job.attempts == 1
+    assert claimed_job.started_at is not None
+    assert claimed_job.completed_at is None
+    assert claimed_job.failed_at is None
+    assert claimed_job.result is None
+    assert claimed_job.error_message is None
+
+
+def test_claim_running_job_returns_none_without_incrementing_attempts(job_service):
+    job = job_service.create_job(
+        JobCreateRequest(payload={"text": "hello backend"})
+    )
+    running_job = job_service.mark_running(job.id)
+
+    claimed_job = job_service.claim_job_for_processing(job.id)
+
+    updated_job = job_service.get_job(job.id)
+
+    assert claimed_job is None
+    assert updated_job.status == JobStatus.RUNNING
+    assert updated_job.attempts == running_job.attempts
+
+
+def test_claim_completed_job_returns_none_without_changing_state(job_service):
+    job = job_service.create_job(
+        JobCreateRequest(payload={"text": "already completed"})
+    )
+    result = {"processed": True}
+    job_service.mark_completed(job.id, result)
+
+    claimed_job = job_service.claim_job_for_processing(job.id)
+
+    updated_job = job_service.get_job(job.id)
+
+    assert claimed_job is None
+    assert updated_job.status == JobStatus.COMPLETED
+    assert updated_job.result == result
+    assert updated_job.attempts == 0
+
+
+def test_claim_failed_job_returns_none_without_changing_state(job_service):
+    job = job_service.create_job(
+        JobCreateRequest(payload={"text": "already failed"})
+    )
+    job_service.mark_failed(job.id, "Already failed")
+
+    claimed_job = job_service.claim_job_for_processing(job.id)
+
+    updated_job = job_service.get_job(job.id)
+
+    assert claimed_job is None
+    assert updated_job.status == JobStatus.FAILED
+    assert updated_job.error_message == "Already failed"
+    assert updated_job.attempts == 0
+
+
+def test_claim_missing_job_raises_not_found(job_service):
+    with pytest.raises(JobNotFoundError):
+        job_service.claim_job_for_processing(999999)
+
+
+def test_mark_completed_stores_result(job_service):
+    job = job_service.create_job(
+        JobCreateRequest(payload={"text": "hello backend"})
+    )
     job_service.mark_running(job.id)
 
     result = {
@@ -191,7 +257,6 @@ def test_mark_failed_stores_error_message(job_service):
     job = job_service.create_job(
         JobCreateRequest(payload={"text": "hello backend"})
     )
-
     job_service.mark_running(job.id)
 
     updated_job = job_service.mark_failed(
@@ -269,7 +334,6 @@ def test_recover_stuck_jobs_marks_old_running_job_as_failed(job_service):
     job = job_service.create_job(
         JobCreateRequest(payload={"text": "old running job"})
     )
-
     running_job = job_service.mark_running(job.id)
     running_job.started_at = datetime.now(UTC) - timedelta(minutes=30)
     job_service.repository.db.commit()
@@ -293,7 +357,6 @@ def test_recover_stuck_jobs_leaves_recent_running_job_untouched(job_service):
     job = job_service.create_job(
         JobCreateRequest(payload={"text": "recent running job"})
     )
-
     job_service.mark_running(job.id)
 
     recovered_jobs = job_service.recover_stuck_jobs(timeout_minutes=10)
