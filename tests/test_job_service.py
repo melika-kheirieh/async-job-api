@@ -74,6 +74,7 @@ def test_create_job_with_same_idempotency_key_returns_existing_job(job_service):
             idempotency_key="request-123",
         )
     )
+
     second_job = job_service.create_job(
         JobCreateRequest(
             payload={"text": "hello backend"},
@@ -139,7 +140,6 @@ def test_duplicate_idempotency_key_does_not_enqueue_again():
 
         assert second_job.id == first_job.id
         assert enqueued_job_ids == [first_job.id]
-
     finally:
         db.close()
         Base.metadata.drop_all(bind=test_engine)
@@ -178,14 +178,51 @@ def test_claim_queued_job_marks_it_as_running(job_service):
     assert claimed_job.error_message is None
 
 
+def test_mark_retrying_updates_job_status(job_service):
+    job = job_service.create_job(
+        JobCreateRequest(payload={"text": "temporary problem"})
+    )
+
+    running_job = job_service.mark_running(job.id)
+    retrying_job = job_service.mark_retrying(job.id, "Temporary failure")
+
+    assert retrying_job.status == JobStatus.RETRYING
+    assert retrying_job.result is None
+    assert retrying_job.error_message == "Temporary failure"
+    assert retrying_job.attempts == running_job.attempts
+    assert retrying_job.started_at is not None
+    assert retrying_job.completed_at is None
+    assert retrying_job.failed_at is None
+
+
+def test_claim_retrying_job_marks_it_as_running(job_service):
+    job = job_service.create_job(
+        JobCreateRequest(payload={"text": "temporary problem"})
+    )
+
+    job_service.mark_running(job.id)
+    job_service.mark_retrying(job.id, "Temporary failure")
+
+    claimed_job = job_service.claim_job_for_processing(job.id)
+
+    assert claimed_job is not None
+    assert claimed_job.status == JobStatus.RUNNING
+    assert claimed_job.attempts == 2
+    assert claimed_job.started_at is not None
+    assert claimed_job.completed_at is None
+    assert claimed_job.failed_at is None
+    assert claimed_job.result is None
+    assert claimed_job.error_message is None
+
+
 def test_claim_running_job_returns_none_without_incrementing_attempts(job_service):
     job = job_service.create_job(
         JobCreateRequest(payload={"text": "hello backend"})
     )
+
     running_job = job_service.mark_running(job.id)
 
     claimed_job = job_service.claim_job_for_processing(job.id)
-
     updated_job = job_service.get_job(job.id)
 
     assert claimed_job is None
@@ -198,10 +235,10 @@ def test_claim_completed_job_returns_none_without_changing_state(job_service):
         JobCreateRequest(payload={"text": "already completed"})
     )
     result = {"processed": True}
+
     job_service.mark_completed(job.id, result)
 
     claimed_job = job_service.claim_job_for_processing(job.id)
-
     updated_job = job_service.get_job(job.id)
 
     assert claimed_job is None
@@ -214,10 +251,10 @@ def test_claim_failed_job_returns_none_without_changing_state(job_service):
     job = job_service.create_job(
         JobCreateRequest(payload={"text": "already failed"})
     )
+
     job_service.mark_failed(job.id, "Already failed")
 
     claimed_job = job_service.claim_job_for_processing(job.id)
-
     updated_job = job_service.get_job(job.id)
 
     assert claimed_job is None
@@ -278,6 +315,11 @@ def test_mark_running_missing_job_raises_not_found(job_service):
         job_service.mark_running(999999)
 
 
+def test_mark_retrying_missing_job_raises_not_found(job_service):
+    with pytest.raises(JobNotFoundError):
+        job_service.mark_retrying(999999, "Temporary failure")
+
+
 def test_mark_completed_missing_job_raises_not_found(job_service):
     with pytest.raises(JobNotFoundError):
         job_service.mark_completed(
@@ -324,7 +366,6 @@ def test_create_job_calls_enqueue_with_created_job_id():
         )
 
         assert enqueued_job_ids == [job.id]
-
     finally:
         db.close()
         Base.metadata.drop_all(bind=test_engine)
@@ -335,6 +376,7 @@ def test_recover_stuck_jobs_marks_old_running_job_as_failed(job_service):
         JobCreateRequest(payload={"text": "old running job"})
     )
     running_job = job_service.mark_running(job.id)
+
     running_job.started_at = datetime.now(UTC) - timedelta(minutes=30)
     job_service.repository.db.commit()
 
@@ -357,16 +399,34 @@ def test_recover_stuck_jobs_leaves_recent_running_job_untouched(job_service):
     job = job_service.create_job(
         JobCreateRequest(payload={"text": "recent running job"})
     )
+
     job_service.mark_running(job.id)
 
     recovered_jobs = job_service.recover_stuck_jobs(timeout_minutes=10)
-
-    assert recovered_jobs == []
-
     updated_job = job_service.get_job(job.id)
 
+    assert recovered_jobs == []
     assert updated_job.status == JobStatus.RUNNING
     assert updated_job.error_message is None
+    assert updated_job.failed_at is None
+
+
+def test_recover_stuck_jobs_leaves_retrying_job_untouched(job_service):
+    job = job_service.create_job(
+        JobCreateRequest(payload={"text": "retrying job"})
+    )
+
+    job_service.mark_running(job.id)
+    retrying_job = job_service.mark_retrying(job.id, "Temporary failure")
+    retrying_job.started_at = datetime.now(UTC) - timedelta(minutes=30)
+    job_service.repository.db.commit()
+
+    recovered_jobs = job_service.recover_stuck_jobs(timeout_minutes=10)
+    updated_job = job_service.get_job(job.id)
+
+    assert recovered_jobs == []
+    assert updated_job.status == JobStatus.RETRYING
+    assert updated_job.error_message == "Temporary failure"
     assert updated_job.failed_at is None
 
 

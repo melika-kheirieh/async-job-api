@@ -6,7 +6,8 @@ from sqlalchemy.orm import Session
 
 from app.models import Job, JobStatus
 
-CLAIMABLE_JOB_STATUSES = (JobStatus.QUEUED,)
+
+CLAIMABLE_JOB_STATUSES = (JobStatus.QUEUED, JobStatus.RETRYING)
 
 
 class JobRepository:
@@ -24,9 +25,11 @@ class JobRepository:
             status=status,
             idempotency_key=idempotency_key,
         )
+
         self.db.add(job)
         self.db.commit()
         self.db.refresh(job)
+
         return job
 
     def rollback(self) -> None:
@@ -78,6 +81,7 @@ class JobRepository:
         self.db.commit()
 
         claimed_job = self.get_by_id(job_id)
+
         if claimed_job is None:
             raise RuntimeError("Claimed job disappeared before it could be loaded.")
 
@@ -96,6 +100,23 @@ class JobRepository:
         job.failed_at = None
         job.error_message = None
         job.result = None
+
+        self.db.commit()
+        self.db.refresh(job)
+
+        return job
+
+    def mark_retrying(self, job_id: int, error_message: str) -> Job | None:
+        job = self.get_by_id(job_id)
+
+        if job is None:
+            return None
+
+        job.status = JobStatus.RETRYING
+        job.result = None
+        job.error_message = error_message
+        job.completed_at = None
+        job.failed_at = None
 
         self.db.commit()
         self.db.refresh(job)

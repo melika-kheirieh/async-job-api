@@ -67,8 +67,13 @@ def process_job_by_id(job_id: int, db: Session) -> None:
         service.mark_completed(job_id, result)
         logger.info("Job completed: job_id=%s", job_id)
 
-    except RetryableJobError:
-        logger.warning("Job failed with retryable error: job_id=%s", job_id)
+    except RetryableJobError as exc:
+        service.mark_retrying(job_id, str(exc))
+        logger.warning(
+            "Job scheduled for retry: job_id=%s error=%s",
+            job_id,
+            exc,
+        )
         raise
 
     except NonRetryableJobError as exc:

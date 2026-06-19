@@ -7,6 +7,7 @@ from app.models import Job, JobStatus
 from app.repositories import JobRepository
 from app.schemas import JobCreateRequest
 
+
 STUCK_JOB_ERROR_MESSAGE = "Job timed out while running"
 DEFAULT_STUCK_JOB_TIMEOUT_MINUTES = 10
 
@@ -76,6 +77,7 @@ class JobService:
             return job
 
         existing_job = self.repository.get_by_id(job_id)
+
         if existing_job is None:
             raise JobNotFoundError(job_id)
 
@@ -83,6 +85,17 @@ class JobService:
 
     def mark_running(self, job_id: int) -> Job:
         job = self.repository.mark_running(job_id)
+
+        if job is None:
+            raise JobNotFoundError(job_id)
+
+        return job
+
+    def mark_retrying(self, job_id: int, error_message: str) -> Job:
+        job = self.repository.mark_retrying(
+            job_id=job_id,
+            error_message=error_message,
+        )
 
         if job is None:
             raise JobNotFoundError(job_id)
