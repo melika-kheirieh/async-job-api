@@ -7,6 +7,9 @@ from app.models import Job, JobStatus
 from app.repositories import JobRepository
 from app.schemas import JobCreateRequest
 
+from app.job_events import log_event
+import logging
+
 STUCK_JOB_ERROR_MESSAGE = "Job timed out while running"
 DEFAULT_STUCK_JOB_TIMEOUT_MINUTES = 10
 
@@ -32,6 +35,16 @@ class JobService:
                 job_create.idempotency_key,
             )
             if existing_job is not None:
+
+                log_event(
+                    logging.INFO,
+                    "job_duplicate_request",
+                    job_id=existing_job.id,
+                    status=existing_job.status,
+                    attempts=existing_job.attempts,
+                    idempotency_key=existing_job.idempotency_key,
+                )
+
                 return existing_job
 
         try:
@@ -40,6 +53,7 @@ class JobService:
                 status=JobStatus.QUEUED,
                 idempotency_key=job_create.idempotency_key,
             )
+
         except IntegrityError:
             self.repository.rollback()
 
@@ -52,7 +66,25 @@ class JobService:
             if existing_job is None:
                 raise
 
+            log_event(
+                logging.INFO,
+                "job_duplicate_request",
+                job_id=existing_job.id,
+                status=existing_job.status,
+                attempts=existing_job.attempts,
+                idempotency_key=existing_job.idempotency_key,
+            )
+
             return existing_job
+
+        log_event(
+            logging.INFO,
+            "job_created",
+            job_id=job.id,
+            status=job.status,
+            attempts=job.attempts,
+            idempotency_key=job.idempotency_key,
+        )
 
         if self.enqueue_job is not None:
             self.enqueue_job(job.id)
@@ -63,7 +95,6 @@ class JobService:
         job = self.repository.get_by_id(job_id)
         if job is None:
             raise JobNotFoundError(job_id)
-
         return job
 
     def list_jobs(
@@ -96,7 +127,6 @@ class JobService:
         job = self.repository.mark_running(job_id)
         if job is None:
             raise JobNotFoundError(job_id)
-
         return job
 
     def mark_retrying(self, job_id: int, error_message: str) -> Job:
@@ -106,7 +136,6 @@ class JobService:
         )
         if job is None:
             raise JobNotFoundError(job_id)
-
         return job
 
     def mark_completed(self, job_id: int, result: dict[str, Any]) -> Job:
@@ -116,7 +145,6 @@ class JobService:
         )
         if job is None:
             raise JobNotFoundError(job_id)
-
         return job
 
     def mark_failed(self, job_id: int, error_message: str) -> Job:
@@ -126,7 +154,6 @@ class JobService:
         )
         if job is None:
             raise JobNotFoundError(job_id)
-
         return job
 
     def recover_stuck_jobs(
@@ -144,7 +171,18 @@ class JobService:
                 job_id=job.id,
                 error_message=STUCK_JOB_ERROR_MESSAGE,
             )
+
             if recovered_job is not None:
+
+                log_event(
+                    logging.WARNING,
+                    "stuck_job_recovered",
+                    job_id=recovered_job.id,
+                    status=recovered_job.status,
+                    attempts=recovered_job.attempts,
+                    error_type="StuckJobTimeout",
+                )
+
                 recovered_jobs.append(recovered_job)
 
         return recovered_jobs
