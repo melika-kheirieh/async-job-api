@@ -72,48 +72,52 @@ def process_job_by_id(job_id: int, db: Session) -> None:
 
     try:
         result = build_job_result(job.payload)
-        service.mark_completed(job_id, result)
+
+        completed_job = service.mark_completed(job_id, result)
 
         log_event(
             logging.INFO,
             "job_completed",
-            job_id=job.id,
-            status="completed",
-            attempts=job.attempts,
+            job_id=completed_job.id,
+            status=completed_job.status,
+            attempts=completed_job.attempts,
         )
 
     except RetryableJobError as exc:
-        service.mark_retrying(job_id, str(exc))
+        retrying_job = service.mark_retrying(job_id, str(exc))
 
         log_event(
             logging.WARNING,
             "job_retrying",
-            job_id=job.id,
-            attempts=job.attempts,
+            job_id=retrying_job.id,
+            status=retrying_job.status,
+            attempts=retrying_job.attempts,
             error_type=type(exc).__name__,
         )
 
         raise
 
     except NonRetryableJobError as exc:
-        service.mark_failed(job_id, str(exc))
+        failed_job = service.mark_failed(job_id, str(exc))
 
         log_event(
             logging.WARNING,
             "job_failed",
-            job_id=job.id,
-            attempts=job.attempts,
+            job_id=failed_job.id,
+            status=failed_job.status,
+            attempts=failed_job.attempts,
             error_type=type(exc).__name__,
         )
 
     except Exception as exc:
-        service.mark_failed(job_id, str(exc))
+        failed_job = service.mark_failed(job_id, str(exc))
 
         log_event(
             logging.ERROR,
             "job_failed",
-            job_id=job.id,
-            attempts=job.attempts,
+            job_id=failed_job.id,
+            status=failed_job.status,
+            attempts=failed_job.attempts,
             error_type=type(exc).__name__,
             exc_info=True,
         )
