@@ -455,3 +455,62 @@ def test_recover_stuck_jobs_leaves_terminal_jobs_untouched(job_service):
     recovered_jobs = job_service.recover_stuck_jobs(timeout_minutes=10)
 
     assert recovered_jobs == []
+
+
+def test_stuck_recovery_does_not_overwrite_completed_job(job_service):
+    job = job_service.create_job(
+        JobCreateRequest(payload={"text": "finishing job"})
+    )
+    running_job = job_service.mark_running(job.id)
+    running_job.started_at = datetime.now(UTC) - timedelta(minutes=30)
+    job_service.repository.db.commit()
+
+    expected_started_at = running_job.started_at
+    completed_result = {"processed": True}
+    job_service.mark_completed(job.id, completed_result)
+
+    recovered_job = job_service.repository.mark_stuck_job_failed(
+        job_id=job.id,
+        expected_started_at=expected_started_at,
+        error_message=STUCK_JOB_ERROR_MESSAGE,
+    )
+
+    assert recovered_job is None
+
+    updated_job = job_service.get_job(job.id)
+    assert updated_job.status == JobStatus.COMPLETED
+    assert updated_job.result == completed_result
+    assert updated_job.error_message is None
+    assert updated_job.failed_at is None
+
+
+def test_stuck_recovery_does_not_overwrite_newer_attempt(job_service):
+    job = job_service.create_job(
+        JobCreateRequest(payload={"text": "retried job"})
+    )
+    running_job = job_service.mark_running(job.id)
+    running_job.started_at = datetime.now(UTC) - timedelta(minutes=30)
+    job_service.repository.db.commit()
+
+    expected_started_at = running_job.started_at
+
+    job_service.mark_retrying(job.id, "Temporary failure")
+    newer_attempt = job_service.claim_job_for_processing(job.id)
+
+    assert newer_attempt is not None
+    assert newer_attempt.attempts == 2
+    assert newer_attempt.started_at != expected_started_at
+
+    recovered_job = job_service.repository.mark_stuck_job_failed(
+        job_id=job.id,
+        expected_started_at=expected_started_at,
+        error_message=STUCK_JOB_ERROR_MESSAGE,
+    )
+
+    assert recovered_job is None
+
+    updated_job = job_service.get_job(job.id)
+    assert updated_job.status == JobStatus.RUNNING
+    assert updated_job.attempts == 2
+    assert updated_job.error_message is None
+    assert updated_job.failed_at is None

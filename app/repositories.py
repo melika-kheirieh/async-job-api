@@ -80,6 +80,42 @@ class JobRepository:
             .filter(Job.started_at < cutoff)
             .all()
         )
+    
+    def mark_stuck_job_failed(
+        self,
+        job_id: int,
+        expected_started_at: datetime,
+        error_message: str,
+    ) -> Job | None:
+        now = datetime.now(UTC)
+
+        result = self.db.execute(
+            update(Job)
+            .where(Job.id == job_id)
+            .where(Job.status == JobStatus.RUNNING)
+            .where(Job.started_at == expected_started_at)
+            .values(
+                status=JobStatus.FAILED,
+                result=None,
+                error_message=error_message,
+                completed_at=None,
+                failed_at=now,
+            )
+        )
+
+        if result.rowcount == 0:
+            self.db.rollback()
+            return None
+
+        self.db.commit()
+
+        recovered_job = self.get_by_id(job_id)
+        if recovered_job is None:
+            raise RuntimeError(
+                "Recovered job disappeared before it could be loaded."
+            )
+
+        return recovered_job
 
     def claim_job_for_processing(self, job_id: int) -> Job | None:
         now = datetime.now(UTC)
