@@ -114,7 +114,8 @@ def test_worker_can_process_retrying_job_on_next_attempt(db_session):
         JobCreateRequest(payload={"text": "recoverable job"})
     )
 
-    service.mark_running(job.id)
+    claimed_job = service.claim_job_for_processing(job.id)
+    assert claimed_job is not None
     service.mark_retrying(job.id, "Temporary failure")
 
     process_job_by_id(job.id, db_session)
@@ -191,7 +192,8 @@ def test_worker_skips_running_job_without_incrementing_attempts(db_session):
     job = service.create_job(
         JobCreateRequest(payload={"text": "already running"})
     )
-    running_job = service.mark_running(job.id)
+    running_job = service.claim_job_for_processing(job.id)
+    assert running_job is not None
 
     process_job_by_id(job.id, db_session)
 

@@ -120,12 +120,6 @@ class JobService:
 
         return None
 
-    def mark_running(self, job_id: int) -> Job:
-        job = self.repository.mark_running(job_id)
-        if job is None:
-            raise JobNotFoundError(job_id)
-        return job
-
     def mark_retrying(self, job_id: int, error_message: str) -> Job:
         job = self.repository.mark_retrying(
             job_id=job_id,
