@@ -80,7 +80,7 @@ class JobRepository:
             .filter(Job.started_at < cutoff)
             .all()
         )
-    
+
     def mark_stuck_job_failed(
         self,
         job_id: int,
@@ -146,24 +146,6 @@ class JobRepository:
             raise RuntimeError("Claimed job disappeared before it could be loaded.")
 
         return claimed_job
-
-    def mark_running(self, job_id: int) -> Job | None:
-        job = self.get_by_id(job_id)
-        if job is None:
-            return None
-
-        job.status = JobStatus.RUNNING
-        job.attempts += 1
-        job.started_at = datetime.now(UTC)
-        job.completed_at = None
-        job.failed_at = None
-        job.error_message = None
-        job.result = None
-
-        self.db.commit()
-        self.db.refresh(job)
-
-        return job
 
     def mark_retrying(self, job_id: int, error_message: str) -> Job | None:
         job = self.get_by_id(job_id)

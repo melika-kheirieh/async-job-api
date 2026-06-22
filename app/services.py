@@ -120,12 +120,6 @@ class JobService:
 
         return None
 
-    def mark_running(self, job_id: int) -> Job:
-        job = self.repository.mark_running(job_id)
-        if job is None:
-            raise JobNotFoundError(job_id)
-        return job
-
     def mark_retrying(self, job_id: int, error_message: str) -> Job:
         job = self.repository.mark_retrying(
             job_id=job_id,
@@ -152,11 +146,9 @@ class JobService:
         if job is None:
             raise JobNotFoundError(job_id)
         return job
-
-
     def recover_stuck_jobs(
-    self,
-    timeout_minutes: int = DEFAULT_STUCK_JOB_TIMEOUT_MINUTES,
+        self,
+        timeout_minutes: int = DEFAULT_STUCK_JOB_TIMEOUT_MINUTES,
     ) -> list[Job]:
         stuck_jobs = self.repository.list_stuck_running_jobs(
             timeout_minutes=timeout_minutes,
