@@ -1,14 +1,13 @@
+import logging
 from collections.abc import Callable
 from typing import Any
 
 from sqlalchemy.exc import IntegrityError
 
+from app.job_events import log_event
 from app.models import Job, JobStatus
 from app.repositories import JobRepository
 from app.schemas import JobCreateRequest
-
-from app.job_events import log_event
-import logging
 
 STUCK_JOB_ERROR_MESSAGE = "Job timed out while running"
 DEFAULT_STUCK_JOB_TIMEOUT_MINUTES = 10
@@ -35,7 +34,6 @@ class JobService:
                 job_create.idempotency_key,
             )
             if existing_job is not None:
-
                 log_event(
                     logging.INFO,
                     "job_duplicate_request",
@@ -53,7 +51,6 @@ class JobService:
                 status=JobStatus.QUEUED,
                 idempotency_key=job_create.idempotency_key,
             )
-
         except IntegrityError:
             self.repository.rollback()
 
@@ -173,7 +170,6 @@ class JobService:
             )
 
             if recovered_job is not None:
-
                 log_event(
                     logging.WARNING,
                     "stuck_job_recovered",

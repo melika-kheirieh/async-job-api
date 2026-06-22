@@ -18,7 +18,6 @@ def log_event(
     event: str,
     *,
     job_id: int | None = None,
-    trace_id: str | None = None,
     exc_info: bool = False,
     **fields: Any,
 ) -> None:
@@ -28,9 +27,6 @@ def log_event(
         f"ts={ts}",
         f"event={event}",
     ]
-
-    if trace_id is not None:
-        parts.append(f"trace_id={trace_id}")
 
     if job_id is not None:
         parts.append(f"job_id={job_id}")

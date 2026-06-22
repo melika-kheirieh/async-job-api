@@ -4,10 +4,9 @@ from sqlalchemy.orm import Session
 
 from app.celery_app import celery_app
 from app.db import SessionLocal
+from app.job_events import log_event
 from app.repositories import JobRepository
 from app.services import JobNotFoundError, JobService
-
-from app.job_events import log_event
 
 MAX_RETRIES = 3
 MAX_RETRY_COUNTDOWN_SECONDS = 30
@@ -142,25 +141,33 @@ def process_job(self, job_id: int) -> None:
             error_message = f"Retryable failure exceeded max retries: {exc}"
 
             try:
-                service.mark_failed(job_id, error_message)
+                failed_job = service.mark_failed(job_id, error_message)
             except JobNotFoundError:
                 log_event(logging.WARNING, "job_not_found", job_id=job_id)
                 return
 
             log_event(
                 logging.WARNING,
-                "job_failed_after_retries",
-                job_id=job_id,
+                "job_failed",
+                job_id=failed_job.id,
+                status=failed_job.status,
+                attempts=failed_job.attempts,
+                error_type=type(exc).__name__,
                 retries=self.request.retries,
+                reason="retry_limit_exceeded",
             )
             return
 
         countdown = get_retry_countdown(self.request.retries)
+        retrying_job = service.get_job(job_id)
 
         log_event(
             logging.WARNING,
             "job_retry_scheduled",
-            job_id=job_id,
+            job_id=retrying_job.id,
+            status=retrying_job.status,
+            attempts=retrying_job.attempts,
+            error_type=type(exc).__name__,
             retry=self.request.retries + 1,
             countdown=countdown,
         )
