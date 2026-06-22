@@ -153,9 +153,10 @@ class JobService:
             raise JobNotFoundError(job_id)
         return job
 
+
     def recover_stuck_jobs(
-        self,
-        timeout_minutes: int = DEFAULT_STUCK_JOB_TIMEOUT_MINUTES,
+    self,
+    timeout_minutes: int = DEFAULT_STUCK_JOB_TIMEOUT_MINUTES,
     ) -> list[Job]:
         stuck_jobs = self.repository.list_stuck_running_jobs(
             timeout_minutes=timeout_minutes,
@@ -164,21 +165,27 @@ class JobService:
         recovered_jobs: list[Job] = []
 
         for job in stuck_jobs:
-            recovered_job = self.repository.mark_failed(
+            if job.started_at is None:
+                continue
+
+            recovered_job = self.repository.mark_stuck_job_failed(
                 job_id=job.id,
+                expected_started_at=job.started_at,
                 error_message=STUCK_JOB_ERROR_MESSAGE,
             )
 
-            if recovered_job is not None:
-                log_event(
-                    logging.WARNING,
-                    "stuck_job_recovered",
-                    job_id=recovered_job.id,
-                    status=recovered_job.status,
-                    attempts=recovered_job.attempts,
-                    error_type="StuckJobTimeout",
-                )
+            if recovered_job is None:
+                continue
 
-                recovered_jobs.append(recovered_job)
+            log_event(
+                logging.WARNING,
+                "stuck_job_recovered",
+                job_id=recovered_job.id,
+                status=recovered_job.status,
+                attempts=recovered_job.attempts,
+                error_type="StuckJobTimeout",
+            )
+
+            recovered_jobs.append(recovered_job)
 
         return recovered_jobs
