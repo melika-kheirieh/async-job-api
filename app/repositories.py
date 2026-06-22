@@ -80,7 +80,7 @@ class JobRepository:
             .filter(Job.started_at < cutoff)
             .all()
         )
-    
+
     def mark_stuck_job_failed(
         self,
         job_id: int,

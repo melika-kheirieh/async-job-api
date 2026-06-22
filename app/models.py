@@ -2,7 +2,16 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import DateTime, Enum, Integer, JSON, String, Text, UniqueConstraint, Index
+from sqlalchemy import (
+    JSON,
+    DateTime,
+    Enum,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -21,7 +30,7 @@ class Job(Base):
 
     __table_args__ = (
         UniqueConstraint("idempotency_key", name="uq_jobs_idempotency_key"),
-        Index("ix_jobs_status_created_at_id", "status", "created_at", "id")
+        Index("ix_jobs_status_created_at_id", "status", "created_at", "id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)

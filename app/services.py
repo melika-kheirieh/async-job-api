@@ -146,11 +146,9 @@ class JobService:
         if job is None:
             raise JobNotFoundError(job_id)
         return job
-
-
     def recover_stuck_jobs(
-    self,
-    timeout_minutes: int = DEFAULT_STUCK_JOB_TIMEOUT_MINUTES,
+        self,
+        timeout_minutes: int = DEFAULT_STUCK_JOB_TIMEOUT_MINUTES,
     ) -> list[Job]:
         stuck_jobs = self.repository.list_stuck_running_jobs(
             timeout_minutes=timeout_minutes,
