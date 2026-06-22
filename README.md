@@ -1,264 +1,125 @@
 # Async Job API
 
-A compact FastAPI + Celery backend system for handling asynchronous jobs with database-backed status tracking, worker execution, failure handling, limited retry handling, stuck-job recovery, idempotency keys, PostgreSQL, Alembic migrations, Docker Compose, tests, and CI.
+A compact FastAPI and Celery backend that makes asynchronous job state explicit,
+durable, and testable.
 
-The project focuses on one practical backend problem:
+The API persists work and returns immediately. Celery processes it in the
+background, Redis coordinates delivery, and PostgreSQL remains the source of
+truth for the job lifecycle.
 
-> Long-running or failure-prone work should not run directly inside the request/response cycle.
+> This project is production-aware, not production-complete. It handles selected
+> retry, duplicate-delivery, and recovery risks without claiming exactly-once
+> execution or exactly-once side effects.
 
-Instead, the API creates a job, returns immediately, and lets a background worker process the job asynchronously while the database keeps the durable job state.
+## Reliability Model
 
----
-
-## What This Project Demonstrates
-
-This project demonstrates a small but realistic async backend workflow:
-
-- API contract design for job submission
-- DB-backed job status tracking
-- Redis/Celery worker execution flow
-- PostgreSQL-backed Docker runtime
-- Alembic migration setup
-- retryable vs non-retryable failure handling
-- persisted failure visibility
-- lifecycle metadata for debugging
-- basic stuck-job recovery
-- idempotency keys for duplicate job creation requests
-- duplicate execution awareness through terminal-status checks
-- service/repository boundaries
-- API, service, and worker-processing tests
-- GitHub Actions CI
-
-The goal is not to build a full production job platform.  
-The goal is to show a clean, explainable, production-aware backend workflow.
-
----
-
-## Tech Stack
-
-- FastAPI — HTTP API
-- SQLAlchemy — ORM and persistence layer
-- PostgreSQL — Docker Compose database runtime
-- SQLite — lightweight local/test fallback
-- Alembic — database migrations
-- Redis — Celery broker
-- Celery — background task execution and retry handling
-- Docker Compose — local multi-service setup
-- Pytest — API, service, and worker-processing tests
-- GitHub Actions — automated test runs
-
----
-
-## System Flow
-
-```text
-Client
-  |
-  | POST /jobs
-  v
-FastAPI API
-  |
-  | create job in DB with status=queued
-  | optionally deduplicate by idempotency_key
-  | enqueue Celery task with job_id
-  v
-Redis broker
-  |
-  | deliver task
-  v
-Celery worker
-  |
-  | load job from DB
-  | skip if job is already terminal
-  | mark job as running
-  | process job
-  | mark job as completed or failed, or schedule a retry
-  v
-PostgreSQL / database
-  |
-  | GET /jobs/{job_id}
-  v
-Client polls job status
-```
-
-Core idea:
-
-```text
-The API submits work.
-The worker executes work.
-The database stores the truth.
-```
-
----
+| Concern | Current approach |
+|---|---|
+| Durable job state | PostgreSQL stores status, payload, result, errors, attempts, and timestamps. |
+| Task delivery | Redis is used only as the Celery broker. |
+| Concurrent delivery | A conditional database update allows only one successful claim. |
+| Retry visibility | Retryable failures persist an explicit `retrying` state. |
+| Duplicate submission | A unique idempotency key returns the existing job. |
+| Stuck execution | Manual recovery fails old `running` jobs conditionally. |
+| Operational visibility | Stable lifecycle events include `job_id` and execution context. |
+| Exactly-once behavior | Not guaranteed; side-effecting handlers must be idempotent. |
 
 ## Architecture
 
-The project separates HTTP concerns, use-case logic, worker logic, and persistence concerns.
+```mermaid
+flowchart LR
+    Client["Client"] --> API["FastAPI"]
+    API --> DB["PostgreSQL"]
+    API --> Redis["Redis broker"]
+    Redis --> Worker["Celery worker"]
+    Worker --> DB
+```
+
+Application boundaries remain small and explicit:
 
 ```text
-Router  -> Service -> Repository -> Database
-Worker  -> Service -> Repository -> Database
+Router -> Service -> Repository -> Database
+Worker -> Service -> Repository -> Database
 Celery task -> testable worker-processing function
 ```
 
-### Router
+- The router owns HTTP concerns.
+- The service owns job use cases.
+- The repository owns persistence and guarded transitions.
+- The Celery task is a thin wrapper around testable worker logic.
 
-The router handles HTTP request and response concerns.  
-It receives API input, delegates use cases to the service layer, and returns response models.
-
-### Service
-
-The service owns the job use cases.  
-It creates jobs, reads jobs, handles job creation idempotency, applies lifecycle transitions, and exposes basic stuck-job recovery.
-
-### Repository
-
-The repository handles database access.  
-It creates job records, loads jobs by id or idempotency key, finds stuck running jobs, and persists status, result, error information, attempts, idempotency keys, and lifecycle timestamps.
-
-### Worker
-
-The worker receives a `job_id`, loads the job through the service/repository path, processes the job, and updates the database-backed status.
-
-The Celery task is kept as a thin wrapper around testable worker-processing logic.  
-This keeps worker behavior testable without requiring Redis or a running Celery worker in unit tests.
-
----
-
-## Core Design Decisions
-
-### Database as the source of truth
-
-The database stores durable job state:
-
-- payload
-- status
-- idempotency key
-- result
-- error message
-- attempts
-- lifecycle timestamps
-- creation and update timestamps
-
-Redis is used only as the Celery message broker.  
-It is not used as the source of truth for job status or job results.
-
-This keeps job state persistent, queryable, and easier to debug.
-
-### Celery task receives only `job_id`
-
-The Celery task receives only the job id, not the full payload.
-
-The worker then reads the job from the database.  
-This avoids duplicating job data between the broker message and the database, and keeps the database as the single source of truth.
-
-### API does not execute the job directly
-
-The API should stay responsive.
-
-It creates the job, persists it, enqueues the background task, and returns immediately.  
-The actual processing happens in the worker.
-
-### Failure is stored as state
-
-A failed job should be visible through the API.
-
-Instead of treating failure as only a worker-side crash or log message, the worker marks the job as `failed` and stores an error message in the database.
-
-### Retry is limited and scoped
-
-The worker distinguishes between retryable and non-retryable failures.
-
-A logical failure should not be retried blindly.  
-A transient failure can be retried with a limited retry count and exponential backoff.
-
-In the current version, retry is handled by Celery retry behavior rather than a separate persisted `retrying` job status. Making retry state explicit is intentionally listed as a future improvement.
-
-### Stuck jobs are made visible
-
-A worker may crash after marking a job as `running` but before marking it as `completed` or `failed`.
-
-To avoid leaving such jobs in `running` forever, the service includes a basic stuck-job recovery path. Jobs that remain `running` longer than a timeout threshold can be marked as `failed` with a clear timeout error message.
-
-This is intentionally a simple recovery mechanism, not a full scheduler or requeue system.
-
-### Idempotency keys deduplicate job creation
-
-`POST /jobs` accepts an optional `idempotency_key`.
-
-If a client submits the same key again, the API returns the existing job instead of creating and enqueueing a duplicate job. The database enforces uniqueness for non-null idempotency keys.
-
-This protects job creation from duplicate client requests.
-
-It is not the same thing as full exactly-once processing.
-
-### Duplicate execution awareness
-
-Broker-based systems may deliver or execute a task more than once.
-
-This project includes a simplified terminal-status guard: if a job is already `completed` or `failed`, the worker skips it instead of blindly processing it again.
-
-This is not full production-grade idempotency, but it shows where the duplicate-execution risk exists.
-
----
+Tasks carry only a `job_id`. The worker loads the latest payload and state from
+PostgreSQL before attempting a guarded claim.
 
 ## Job Lifecycle
 
-Current lifecycle paths:
-
-```text
-queued -> running -> completed
-queued -> running -> failed
-queued -> running -> retry scheduled by Celery -> running -> completed/failed
-queued -> running -> stuck recovery -> failed
+```mermaid
+stateDiagram-v2
+    [*] --> queued
+    queued --> running: claim
+    running --> completed: success
+    running --> failed: permanent failure
+    running --> retrying: retryable failure
+    retrying --> running: reclaim
+    retrying --> failed: retry limit exhausted
 ```
 
 | Status | Meaning |
-| --- | --- |
-| `queued` | The job was created and is waiting to be processed. |
-| `running` | The worker has started processing the job. |
-| `completed` | The job finished successfully and has a result. |
-| `failed` | The job failed and has an error message. |
+|---|---|
+| `queued` | Waiting to be claimed. |
+| `running` | Claimed and being processed. |
+| `retrying` | Waiting for another attempt. |
+| `completed` | Finished successfully. |
+| `failed` | Permanently failed or recovered as stuck. |
 
-Terminal statuses:
+Only `queued` and `retrying` jobs are claimable. `completed` and `failed` are
+terminal.
 
-- `completed`
-- `failed`
+Claiming is performed with a conditional database update. Two workers may
+receive the same task, but only one can transition the job from a claimable state
+to `running`. The `attempts` counter increases only when that transition succeeds.
 
-Once a job reaches a terminal status, the worker should not blindly process it again.
+## Quick Start
 
-Retry is currently modeled as worker/Celery behavior, not as a separate persisted job status. A future improvement is to add an explicit `retrying` status so the API state reflects retry backoff more precisely.
+Start PostgreSQL and Redis:
 
----
-
-## Job Metadata
-
-Each job stores lightweight lifecycle metadata:
-
-| Field | Meaning |
-| --- | --- |
-| `idempotency_key` | Optional client-provided key used to deduplicate job creation requests. |
-| `attempts` | Number of times the worker started processing the job. |
-| `started_at` | Timestamp for when the worker started the latest processing attempt. |
-| `completed_at` | Timestamp for successful completion. |
-| `failed_at` | Timestamp for failure. |
-| `created_at` | Timestamp for job creation. |
-| `updated_at` | Timestamp for the latest update. |
-
-This metadata is intentionally lightweight.  
-It is not a full audit log or job history table.
-
----
-
-## API Endpoints
-
-### Create a job
-
-```http
-POST /jobs
+```bash
+docker compose up -d postgres redis
 ```
 
-Example request:
+Apply migrations:
+
+```bash
+docker compose run --rm api alembic upgrade head
+```
+
+Start the API and worker:
+
+```bash
+docker compose up --build api worker
+```
+
+The API is available at `http://localhost:8001` and its OpenAPI documentation at
+`http://localhost:8001/docs`.
+
+View worker logs:
+
+```bash
+docker compose logs -f worker
+```
+
+Stop the stack with `docker compose down`. Use `docker compose down -v` only when
+you also want to delete local PostgreSQL data.
+
+## API
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `POST` | `/jobs` | Create and enqueue a job. |
+| `GET` | `/jobs/{job_id}` | Read durable state and result. |
+| `GET` | `/jobs` | Filter and paginate jobs. |
+
+### Create a Job
 
 ```bash
 curl -X POST http://localhost:8001/jobs \
@@ -266,616 +127,127 @@ curl -X POST http://localhost:8001/jobs \
   -d '{"payload": {"text": "hello backend"}}'
 ```
 
-Example response:
+The endpoint returns `201 Created` with a persisted job in `queued`. Submission
+does not mean the background work has completed.
 
-```json
-{
-  "id": 1,
-  "status": "queued",
-  "idempotency_key": null,
-  "payload": {
-    "text": "hello backend"
-  },
-  "result": null,
-  "error_message": null,
-  "attempts": 0,
-  "started_at": null,
-  "completed_at": null,
-  "failed_at": null,
-  "created_at": "2026-06-05T08:15:08.416995",
-  "updated_at": "2026-06-05T08:15:08.416997"
-}
-```
-
-This response means the job was created and queued.  
-It does not mean the job has already finished.
-
----
-
-### Create a job with an idempotency key
+Add an optional idempotency key when clients may repeat a submission:
 
 ```bash
 curl -X POST http://localhost:8001/jobs \
   -H "Content-Type: application/json" \
-  -d '{"payload": {"text": "same request"}, "idempotency_key": "demo-123"}'
+  -d '{
+    "payload": {"text": "same request"},
+    "idempotency_key": "demo-123"
+  }'
 ```
 
-Send the same request again:
+Repeating the same key returns the existing job without intentionally enqueueing
+another task. This deduplicates job creation, not execution or side effects.
 
-```bash
-curl -X POST http://localhost:8001/jobs \
-  -H "Content-Type: application/json" \
-  -d '{"payload": {"text": "same request"}, "idempotency_key": "demo-123"}'
-```
-
-Expected behavior:
-
-```text
-the same job id is returned
-a duplicate job is not created
-a duplicate task is not enqueued
-```
-
-This is request deduplication for job creation.  
-It is not a full exactly-once guarantee for all possible side effects.
-
----
-
-### Get job status
-
-```http
-GET /jobs/{job_id}
-```
-
-Example request:
+### Read and List Jobs
 
 ```bash
 curl http://localhost:8001/jobs/1
+curl "http://localhost:8001/jobs?status=failed&limit=20&offset=0"
 ```
 
-Replace `1` with the id returned by the create-job response.
+List behavior:
 
-Example completed response:
+- `status` is optional and accepts any lifecycle status;
+- `limit` accepts 1-100;
+- `offset` must be non-negative;
+- results are ordered newest first;
+- responses include `items`, `limit`, `offset`, and total matching `count`.
 
-```json
-{
-  "id": 1,
-  "status": "completed",
-  "idempotency_key": null,
-  "payload": {
-    "text": "hello backend"
-  },
-  "result": {
-    "processed": true,
-    "input_size": 25,
-    "message": "Job completed successfully"
-  },
-  "error_message": null,
-  "attempts": 1,
-  "started_at": "2026-06-05T08:15:08.500101",
-  "completed_at": "2026-06-05T08:15:08.526863",
-  "failed_at": null,
-  "created_at": "2026-06-05T08:15:08.416995",
-  "updated_at": "2026-06-05T08:15:08.526863"
-}
-```
+Unknown job IDs return `404`; invalid query parameters return `422`.
 
----
+## Failure and Retry Behavior
 
-## Failure Handling
-
-### Non-retryable failure
-
-A payload with `fail: true` simulates a non-retryable failure.
-
-In this case, the worker marks the job as `failed` immediately because retrying the same logical failure would not change the outcome.
-
-Example request:
+The demo processor exposes two deterministic failure inputs.
 
 ```bash
+# Non-retryable: becomes failed immediately
 curl -X POST http://localhost:8001/jobs \
   -H "Content-Type: application/json" \
-  -d '{"payload": {"text": "fail case", "fail": true}}'
-```
+  -d '{"payload": {"text": "bad input", "fail": true}}'
 
-Expected final status:
-
-```text
-failed
-```
-
-Expected error message:
-
-```text
-Forced failure requested by payload
-```
-
-The initial `POST /jobs` can still return successfully because it only creates and enqueues the job.  
-The final execution outcome is observed through `GET /jobs/{job_id}`.
-
----
-
-### Retryable failure
-
-A payload with `transient_fail: true` simulates a retryable failure.
-
-In this case, the Celery task schedules limited retries with exponential backoff.
-
-Example request:
-
-```bash
+# Retryable: enters retrying and eventually fails after the retry limit
 curl -X POST http://localhost:8001/jobs \
   -H "Content-Type: application/json" \
-  -d '{"payload": {"text": "temporary problem", "transient_fail": true}}'
+  -d '{"payload": {"text": "temporary issue", "transient_fail": true}}'
 ```
 
-This models temporary failures such as:
+The retry policy allows three retries after the initial attempt. Countdown values
+are 1, 2, and 4 seconds, with a 30-second upper bound. Before each retry, the
+latest error is persisted and the next delivery must claim the job again.
 
-- short-lived network issues
-- external service timeouts
-- temporary infrastructure problems
+## Stuck-Job Recovery
 
-In the current version, retryable failure is represented through Celery retry behavior and worker logs. It is not represented by a separate persisted `retrying` job status yet.
-
-The retry behavior is intentionally limited.  
-The project does not claim production-grade retry orchestration, dead-letter queues, or exactly-once execution.
-
----
-
-## Stuck Job Recovery
-
-A worker can fail after marking a job as `running` but before marking it as `completed` or `failed`.
-
-In that case, the job may remain stuck in the `running` state forever.
-
-To make this failure mode visible, the service includes a simple recovery path:
-
-- find jobs with `status = running`
-- check whether `started_at` is older than a timeout threshold
-- mark those jobs as `failed`
-- store a clear timeout error message
-
-Default timeout:
-
-```text
-10 minutes
-```
-
-Service method:
+A worker can stop after claiming a job but before persisting its final state. The
+service exposes:
 
 ```python
 recover_stuck_jobs(timeout_minutes=10)
 ```
 
-This is intentionally a basic recovery mechanism.  
-It does not automatically requeue jobs, run on a schedule, or implement distributed locking.
+Recovery fails old `running` jobs instead of automatically requeueing work whose
+previous outcome is uncertain. Its write succeeds only if the job is still
+`running` and the observed `started_at` has not changed.
 
-In a production system, this kind of recovery would typically be executed by a scheduled reconciliation job and would need stronger concurrency controls.
+Recovery is manually invoked. Scheduling, leases, heartbeats, fencing, and full
+stale-worker protection remain out of scope.
 
----
+## Lifecycle Logging
 
-## Worker Logging
-
-The worker logs key execution events:
-
-- job processing started
-- job completed
-- job failed
-- retryable failure detected
-- retry scheduled
-- job failed after retry limit
-- terminal job skipped
-- missing job skipped
-
-Example logs:
+Logs use stable events such as `job_created`, `job_claimed`, `job_retrying`,
+`job_retry_scheduled`, `job_completed`, `job_failed`, `job_skipped`, and
+`stuck_job_recovered`.
 
 ```text
-Starting job processing: job_id=8
-Job completed: job_id=8
-Starting job processing: job_id=9
-Job failed with non-retryable error: job_id=9 error=Forced failure requested by payload
-Starting job processing: job_id=10
-Job failed with retryable error: job_id=10
-Retrying job: job_id=10 retry=1 countdown=1 error=Transient failure requested by payload
-Skipping terminal job: job_id=11 status=completed
+event=job_claimed job_id=42 status=running attempts=2
+event=job_completed job_id=42 status=completed attempts=2
 ```
 
-This is intentionally lightweight logging, not a full observability setup.
+This is lightweight lifecycle logging, not durable event history or a
+centralized observability stack.
 
-For a production system, this could be extended with request id propagation, centralized structured logging, tracing, metrics, and alerting.
+## Tests
 
----
-
-## Reliability Notes
-
-This project intentionally separates durable state from message delivery:
-
-- The database stores job state, payload, result, error information, attempts, idempotency keys, and lifecycle timestamps.
-- Redis delivers task messages to Celery workers.
-- The worker updates job state in the database as processing progresses.
-
-This means the database is the best place to inspect the current job state.
-
-Current reliability-oriented behaviors:
-
-- database-backed status tracking
-- terminal-status guard for duplicate execution awareness
-- persisted failure information
-- lifecycle metadata
-- limited retry handling for retryable failures
-- exponential backoff for retry attempts
-- basic stuck-job recovery
-- idempotency key support for duplicate job creation requests
-- testable worker-processing logic without requiring a live broker in unit tests
-
-Current non-guarantees:
-
-- no explicit persisted `retrying` state yet
-- no guarded job claiming with conditional DB-level transition yet
-- no full exactly-once processing
-- no distributed locking
-- no dead-letter queue
-- no automatic scheduled recovery
-- no production-grade idempotency for sensitive side effects
-- no full audit/event history table
-- no centralized observability stack
-
-The project is production-aware, but not a full production-grade job platform.
-
----
-
-## PostgreSQL Docker Runtime
-
-The default local Python runtime falls back to SQLite when `DATABASE_URL` is not set.  
-This keeps tests and simple local runs lightweight.
-
-The Docker Compose runtime uses PostgreSQL so the API and worker share the same database through `DATABASE_URL`.
-
-PostgreSQL stores data in the named Docker volume:
-
-```text
-pg_data
-```
-
-Use this command when you want to remove local database state:
-
-```bash
-docker compose down -v
-```
-
-Warning: removing volumes may delete local database state.
-
----
-
-## Alembic Migrations
-
-This project includes Alembic for database migration management.
-
-In the Docker Compose runtime, the database schema should be created or updated through Alembic migrations instead of relying on application startup to create tables implicitly.
-
-Run migrations with:
-
-```bash
-docker compose run --rm api alembic upgrade head
-```
-
-For simple local tests, the test setup can still create the schema directly against SQLite.
-
-This split is intentional:
-
-- Alembic is used for versioned database schema changes.
-- SQLite test setup stays lightweight and fast.
-
----
-
-## How to Run
-
-### Start infrastructure services
-
-```bash
-docker compose up -d postgres redis
-```
-
-### Apply migrations
-
-```bash
-docker compose run --rm api alembic upgrade head
-```
-
-### Start API and worker
-
-```bash
-docker compose up --build
-```
-
-The API will be available at:
-
-```text
-http://localhost:8001
-```
-
-The Docker Compose setup includes:
-
-- `api`
-- `worker`
-- `redis`
-- `postgres`
-
-The API container listens internally on port `8000` and is mapped to port `8001` on the host.
-
-### View worker logs
-
-```bash
-docker compose logs -f worker
-```
-
-Or:
-
-```bash
-docker compose logs worker --tail=80
-```
-
-### Stop services
-
-```bash
-docker compose down
-```
-
-To remove volumes as well:
-
-```bash
-docker compose down -v
-```
-
----
-
-## Example Flow
-
-### Successful job
-
-Create a job:
-
-```bash
-curl -X POST http://localhost:8001/jobs \
-  -H "Content-Type: application/json" \
-  -d '{"payload": {"text": "hello service boundary"}}'
-```
-
-The response contains an `id`.
-
-Poll the job:
-
-```bash
-curl http://localhost:8001/jobs/1
-```
-
-Replace `1` with the id returned by the create-job response.
-
-Expected final status:
-
-```text
-completed
-```
-
----
-
-### Non-retryable failing job
-
-Create a job that intentionally fails during worker processing:
-
-```bash
-curl -X POST http://localhost:8001/jobs \
-  -H "Content-Type: application/json" \
-  -d '{"payload": {"text": "fail case", "fail": true}}'
-```
-
-Poll the job:
-
-```bash
-curl http://localhost:8001/jobs/2
-```
-
-Replace `2` with the id returned by the create-job response.
-
-Expected final status:
-
-```text
-failed
-```
-
-Expected error message:
-
-```text
-Forced failure requested by payload
-```
-
----
-
-### Retryable failing job
-
-Create a job that simulates a transient failure:
-
-```bash
-curl -X POST http://localhost:8001/jobs \
-  -H "Content-Type: application/json" \
-  -d '{"payload": {"text": "temporary problem", "transient_fail": true}}'
-```
-
-Inspect worker logs:
-
-```bash
-docker compose logs worker --tail=80
-```
-
-The worker treats this as retryable and schedules limited retries with exponential backoff.
-
----
-
-### Idempotent job creation
-
-Create a job with an idempotency key:
-
-```bash
-curl -X POST http://localhost:8001/jobs \
-  -H "Content-Type: application/json" \
-  -d '{"payload": {"text": "same request"}, "idempotency_key": "demo-123"}'
-```
-
-Send the same request again:
-
-```bash
-curl -X POST http://localhost:8001/jobs \
-  -H "Content-Type: application/json" \
-  -d '{"payload": {"text": "same request"}, "idempotency_key": "demo-123"}'
-```
-
-Expected behavior:
-
-```text
-the same job id is returned
-a duplicate job is not created
-a duplicate task is not enqueued
-```
-
----
-
-## Running Tests
-
-Run tests with:
+Run the fast test suite:
 
 ```bash
 pytest -q
 ```
 
-The current test suite covers core API, service, and worker-processing behavior, including:
+It covers API, service, repository, worker lifecycle, retry, duplicate delivery,
+idempotency, listing, and recovery behavior without requiring a live broker.
 
-- creating a job
-- creating a job with an idempotency key
-- returning an existing job for a duplicate idempotency key
-- ensuring duplicate idempotency keys do not enqueue another task
-- creating separate jobs when no idempotency key is provided
-- rejecting invalid job creation requests
-- fetching an existing job
-- returning 404 for unknown jobs
-- initial queued status
-- running transition
-- completed transition
-- failed transition
-- missing-job service errors
-- enqueue boundary behavior without requiring a real broker
-- stuck-job recovery for old running jobs
-- stuck-job recovery leaving recent running jobs untouched
-- stuck-job recovery leaving terminal jobs untouched
-- worker processing success path
-- worker processing non-retryable failure path
-- worker processing retryable failure path
-- retry countdown/backoff behavior
-- terminal-status skip behavior
-
-The core worker processing logic is tested without requiring Redis or a running Celery worker.
-
-Full Celery/Redis integration can be validated manually through Docker Compose using the success, failure, retryable-failure, and idempotency flows shown above.
-
----
-
-## CI
-
-GitHub Actions runs the test suite on push and pull request.
-
-The current CI workflow:
-
-- checks out the repository
-- sets up Python
-- installs dependencies
-- runs `pytest -q`
-
----
-
-## Dependency Downloads
-
-The Docker build installs Python packages using Liara's PyPI mirror as the primary index and `pypi.org` as a fallback.
-
-If needed, rebuild Docker images with:
+Run the multi-service smoke test:
 
 ```bash
-docker compose build --no-cache api worker
+./scripts/e2e_smoke.sh
 ```
 
-The `wheels/` directory is ignored by git and should remain local only.
+The script starts a clean Docker Compose stack, applies migrations, and verifies
+successful completion, persisted failure, duplicate idempotency behavior, and
+filtered job listing. It exits non-zero on failure and cleans up on exit.
 
----
+GitHub Actions runs `pytest -q` with Python 3.12 on pushes and pull requests. The
+Docker smoke test remains a manual integration check.
 
-## Intentional Scope
+## Decisions and Boundaries
 
-This project intentionally focuses on a compact async job-processing flow rather than full production infrastructure.
+- [Architecture decisions](docs/decisions.md)
+- [Production boundaries](docs/production-boundaries.md)
 
-Included in this version:
+Important non-guarantees include:
 
-- API-based job submission
-- database-backed job status tracking
-- PostgreSQL Docker runtime
-- Alembic migrations
-- Redis/Celery worker execution
-- failure visibility
-- lifecycle metadata
-- limited retry handling with backoff
-- basic stuck-job recovery
-- idempotency keys for duplicate job creation requests
-- duplicate execution awareness through terminal-status checks
-- API, service, and worker-processing tests
-- GitHub Actions CI
+- no exactly-once execution or side effects;
+- no atomic database-to-broker publication;
+- no automatic scheduled recovery or dead-letter workflow;
+- no full stale-worker fencing;
+- no production observability or deployment hardening.
 
-Out of scope for this version:
-
-- authentication
-- frontend
-- Kubernetes
-- advanced monitoring
-- distributed locking
-- dead-letter queues
-- production-grade idempotency for all side effects
-- automatic scheduled recovery
-- automatic requeue for stuck jobs
-- multiple job types
-- queue priorities
-- rate limiting
-- full exactly-once processing
-
-This scope is intentional: the project focuses on the core async lifecycle and selected reliability concerns rather than trying to become a full distributed job platform.
-
----
-
-## Future Improvements
-
-The next improvements should focus on correctness and operational visibility rather than adding more infrastructure.
-
-Planned or possible next steps:
-
-- guard job claiming with conditional state transitions
-- make retry state explicit instead of leaving retryable jobs ambiguously `running`
-- add lifecycle tests for guarded claiming and duplicate delivery
-- add job listing with status filtering and pagination
-- expand the Docker smoke test beyond the happy path
-- improve worker logs into event-based lifecycle logs
-- document design decisions and production boundaries
-- add request id propagation
-- add metrics for queued/running/completed/failed jobs
-- add dead-letter queue behavior for permanently failed jobs
-- add carefully scoped production-grade idempotency for sensitive side effects
-
-These are intentionally incremental improvements.  
-The next priority is not adding more tools; it is making async state transitions more defensible.
-
----
-
-## Project Summary
-
-This project is a FastAPI-based async job processing API where the API creates a job, stores it in the database, enqueues a Celery task through Redis, and returns immediately.
-
-The worker receives only the job id, reads the job from the database, processes it, and persists the final result or failure state. PostgreSQL is the source of truth for job status, while Redis is only used as the Celery broker.
-
-The project includes retry/failure handling, stuck-job recovery, idempotency keys for duplicate job creation, Docker Compose setup, Alembic migrations, tests, and CI.
-
-Main trade-off:
-
-This project is production-aware, not production-complete. It demonstrates the core async workflow and selected reliability concerns, while intentionally leaving out full exactly-once processing, distributed locking, DLQs, full observability, and production deployment hardening.
+The project intentionally avoids expanding into Kafka, Kubernetes, multiple job
+types, priority queues, an admin dashboard, distributed locking, or a complete
+monitoring stack without a concrete operational need.
