@@ -189,7 +189,7 @@ canceled_status="$(json_value "status" <<< "$canceled_job")"
 canceled_error="$(json_value "error_message" <<< "$canceled_job")"
 
 assert_equal "$canceled_status" "canceled" "queued job should be canceled"
-assert_equal "$canceled_error" "Job canceled by request" "canceled job should store cancellation reason"
+assert_equal "$canceled_error" "None" "canceled job should not store error_message"
 
 echo "Cancel check passed. job_id=$cancel_id"
 
