@@ -1,17 +1,29 @@
 # Local environment
 .env
+.env.*
+!.env.example
 .venv/
 venv/
 
 # Python cache
 __pycache__/
 *.py[cod]
+*$py.class
+
+# Test and coverage artifacts
 .pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
 
 # Local database files
 *.db
 *.sqlite
 *.sqlite3
+jobs.db
+
+# Local logs
+*.log
 
 # Optional local Docker wheelhouse
 wheels/
