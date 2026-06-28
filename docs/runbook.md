@@ -325,9 +325,9 @@ Canceling a job does not remove Celery messages from Redis. If Celery later
 delivers the task, the worker loads the latest database state and skips canceled
 jobs.
 
-Successful cancellation responses keep `result`, `completed_at`, and `failed_at`
-as `null`. The API stores `Job canceled by request` in `error_message` so the
-terminal reason is visible.
+The current API does not store a cancellation reason in `error_message`.
+Successful cancellation responses keep `result`, `error_message`,
+`completed_at`, and `failed_at` as `null`.
 
 ## Duplicate Idempotency Key
 
