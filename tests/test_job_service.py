@@ -9,7 +9,12 @@ from app.db import Base
 from app.models import Job, JobStatus
 from app.repositories import JobRepository
 from app.schemas import JobCreateRequest
-from app.services import STUCK_JOB_ERROR_MESSAGE, JobNotFoundError, JobService
+from app.services import (
+    STUCK_JOB_ERROR_MESSAGE,
+    JobCancellationConflictError,
+    JobNotFoundError,
+    JobService,
+)
 
 
 @pytest.fixture()
@@ -253,6 +258,21 @@ def test_claim_failed_job_returns_none_without_changing_state(job_service):
     assert updated_job.attempts == 0
 
 
+def test_claim_canceled_job_returns_none_without_changing_state(job_service):
+    job = job_service.create_job(
+        JobCreateRequest(payload={"text": "already canceled"})
+    )
+
+    canceled_job = job_service.cancel_job(job.id)
+
+    claimed_job = job_service.claim_job_for_processing(job.id)
+    updated_job = job_service.get_job(job.id)
+
+    assert claimed_job is None
+    assert updated_job.status == JobStatus.CANCELED
+    assert updated_job.attempts == canceled_job.attempts
+
+
 def test_claim_missing_job_raises_not_found(job_service):
     with pytest.raises(JobNotFoundError):
         job_service.claim_job_for_processing(999999)
@@ -319,6 +339,92 @@ def test_mark_failed_missing_job_raises_not_found(job_service):
             999999,
             "Something went wrong",
         )
+
+
+def test_cancel_queued_job_marks_it_as_canceled(job_service):
+    job = job_service.create_job(
+        JobCreateRequest(payload={"text": "cancel me"})
+    )
+
+    canceled_job = job_service.cancel_job(job.id)
+
+    assert canceled_job.status == JobStatus.CANCELED
+    assert canceled_job.result is None
+    assert canceled_job.error_message is None
+    assert canceled_job.attempts == 0
+    assert canceled_job.started_at is None
+    assert canceled_job.completed_at is None
+    assert canceled_job.failed_at is None
+
+
+def test_cancel_retrying_job_marks_it_as_canceled(job_service):
+    job = job_service.create_job(
+        JobCreateRequest(payload={"text": "cancel retry"})
+    )
+
+    claim_job(job_service, job.id)
+    retrying_job = job_service.mark_retrying(job.id, "Temporary failure")
+
+    canceled_job = job_service.cancel_job(job.id)
+
+    assert canceled_job.status == JobStatus.CANCELED
+    assert canceled_job.result is None
+    assert canceled_job.error_message is None
+    assert canceled_job.attempts == retrying_job.attempts
+    assert canceled_job.started_at == retrying_job.started_at
+    assert canceled_job.completed_at is None
+    assert canceled_job.failed_at is None
+
+
+@pytest.mark.parametrize(
+    ("status", "prepare_job"),
+    [
+        (
+            JobStatus.RUNNING,
+            lambda service, job_id: service.claim_job_for_processing(job_id),
+        ),
+        (
+            JobStatus.COMPLETED,
+            lambda service, job_id: service.mark_completed(
+                job_id,
+                {"processed": True},
+            ),
+        ),
+        (
+            JobStatus.FAILED,
+            lambda service, job_id: service.mark_failed(
+                job_id,
+                "Already failed",
+            ),
+        ),
+        (
+            JobStatus.CANCELED,
+            lambda service, job_id: service.cancel_job(job_id),
+        ),
+    ],
+)
+def test_cancel_non_cancelable_job_raises_conflict(
+    job_service,
+    status,
+    prepare_job,
+):
+    job = job_service.create_job(
+        JobCreateRequest(payload={"text": f"{status.value} job"})
+    )
+    prepare_job(job_service, job.id)
+
+    with pytest.raises(JobCancellationConflictError) as exc_info:
+        job_service.cancel_job(job.id)
+
+    assert exc_info.value.status == status
+    assert str(exc_info.value) == (
+        f"Job cannot be canceled from {status.value} status"
+    )
+
+
+def test_cancel_missing_job_raises_not_found(job_service):
+    with pytest.raises(JobNotFoundError):
+        job_service.cancel_job(999999)
 
 
 def test_create_job_calls_enqueue_with_created_job_id():

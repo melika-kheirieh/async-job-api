@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.models import Job, JobStatus
 
 CLAIMABLE_JOB_STATUSES = (JobStatus.QUEUED, JobStatus.RETRYING)
+CANCELABLE_JOB_STATUSES = (JobStatus.QUEUED, JobStatus.RETRYING)
 
 
 class JobRepository:
@@ -146,6 +147,32 @@ class JobRepository:
             raise RuntimeError("Claimed job disappeared before it could be loaded.")
 
         return claimed_job
+
+    def cancel_job(self, job_id: int) -> Job | None:
+        result = self.db.execute(
+            update(Job)
+            .where(Job.id == job_id)
+            .where(Job.status.in_(CANCELABLE_JOB_STATUSES))
+            .values(
+                status=JobStatus.CANCELED,
+                result=None,
+                error_message=None,
+                completed_at=None,
+                failed_at=None,
+            )
+        )
+
+        if result.rowcount == 0:
+            self.db.rollback()
+            return None
+
+        self.db.commit()
+
+        canceled_job = self.get_by_id(job_id)
+        if canceled_job is None:
+            raise RuntimeError("Canceled job disappeared before it could be loaded.")
+
+        return canceled_job
 
     def mark_retrying(self, job_id: int, error_message: str) -> Job | None:
         job = self.get_by_id(job_id)
