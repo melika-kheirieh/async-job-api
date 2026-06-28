@@ -7,14 +7,17 @@ production job platform.
 ## Current Guarantees
 
 - PostgreSQL stores the durable job state and lifecycle metadata.
+- API-visible lifecycle state is read from PostgreSQL, not Redis.
 - Only `queued` and `retrying` jobs may be claimed for processing.
 - Claiming is a conditional database transition.
 - `attempts` increases only when a claim succeeds.
 - Retryable failures enter an explicit `retrying` state.
 - Retries are bounded and use exponential backoff.
 - Non-retryable failures and exhausted retries become `failed`.
+- Only `queued` and `retrying` jobs may be canceled.
 - Terminal jobs cannot be claimed again.
 - Idempotency keys prevent duplicate job rows for the same key.
+- Demo payload processing is separated from worker orchestration.
 - Lifecycle events include the job ID and relevant execution context.
 - Stuck-job recovery fails a candidate only if its observed execution state has
   not changed.
@@ -31,6 +34,9 @@ The current system does not guarantee:
 - exactly-once external side effects;
 - atomicity between committing a job and publishing its Celery task;
 - automatic recovery of every lost or stuck task;
+- removal of already-published Celery messages when a job is canceled;
+- broker-level cancellation, message deletion, or Celery task revocation;
+- cancellation of running work;
 - durable lifecycle event history;
 - full protection from stale workers;
 - zero data loss under infrastructure failure;
@@ -39,6 +45,25 @@ The current system does not guarantee:
 An idempotency key deduplicates job creation requests. It does not make the job
 handler or its external side effects idempotent.
 
+## Cancellation Limits
+
+Cancellation is limited to jobs in `queued` or `retrying`. A successful
+cancellation prevents future processing according to PostgreSQL state.
+
+Cancellation does not revoke a Celery task, delete a Redis message, or interrupt
+work that is already `running`. If Celery later delivers a task for a canceled
+job, the worker reloads the database state, fails the guarded claim, and skips
+the payload.
+
+## Recovery Limits
+
+Stuck-job recovery is currently invoked explicitly through the recovery CLI. It
+marks old `running` jobs as `failed` through a guarded transition.
+
+Recovery is not automatically scheduled, does not prove whether side effects
+already happened, and does not requeue work. The local CLI is not an
+authenticated or audited production operations surface.
+
 ## Failure Modes Handled
 
 The system explicitly handles:
@@ -46,22 +71,22 @@ The system explicitly handles:
 - non-retryable processing failures;
 - retryable failures with a bounded retry policy;
 - retry exhaustion;
+- cancellation of waiting jobs;
+- stale Celery delivery after cancellation, which is skipped by the claim guard;
 - duplicate task delivery for jobs that are no longer claimable;
 - duplicate creation requests using the same idempotency key;
 - concurrent idempotency-key insertion through a database uniqueness constraint;
 - missing jobs received by a worker;
-- stale jobs left in `running`;
+- stale `running` jobs found by manual recovery;
 - unexpected worker-processing exceptions;
 - visibility of failure details through persisted state and lifecycle logs.
-
-Stuck-job recovery is currently invoked explicitly. It is not automatically
-scheduled.
 
 ## Race Conditions Handled
 
 The current design protects against:
 
 - two workers successfully claiming the same claimable job concurrently;
+- a worker processing a job after a successful cancellation transition;
 - concurrent requests creating separate jobs with the same idempotency key;
 - recovery overwriting a job that completed after being identified as stuck;
 - recovery failing a newer execution whose start time changed after discovery.
@@ -90,6 +115,7 @@ A production deployment would require decisions and implementation for:
 - atomic or recoverable database-to-broker publication;
 - idempotent business handlers and external operation keys;
 - scheduled reconciliation and stuck-job recovery;
+- authenticated and audited operational recovery commands;
 - worker ownership, leases, heartbeats, or fencing;
 - dead-letter handling and operational replay controls;
 - metrics, alerting, tracing, and centralized logs;
@@ -111,6 +137,7 @@ The project intentionally does not add:
 - a monitoring stack;
 - multiple job types or priority queues;
 - an administration dashboard;
+- broker-level cancellation or task revocation;
 - a durable audit-event table.
 
 These features should be introduced only when their operational need and

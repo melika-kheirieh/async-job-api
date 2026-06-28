@@ -1,6 +1,7 @@
 # Operations Runbook
 
-This runbook describes how to diagnose common operational issues in the Async Job API project.
+This runbook describes how to diagnose common operational issues in the Async
+Job API project.
 
 The project uses:
 
@@ -18,16 +19,28 @@ Start with these commands:
 
 ```bash
 docker compose ps
-docker compose logs -f api
-docker compose logs -f worker
-docker compose logs -f postgres
-docker compose logs -f redis
+docker compose logs --tail=100 api
+docker compose logs --tail=100 worker
+docker compose logs --tail=100 postgres
+docker compose logs --tail=100 redis
 ````
+
+Follow a log stream only when you need live output:
+
+```bash
+docker compose logs -f worker
+```
 
 Check API health through the OpenAPI page:
 
 ```bash
-open http://localhost:8001/docs
+curl -fsS http://localhost:8001/docs > /dev/null
+```
+
+Inspect recent jobs:
+
+```bash
+curl "http://localhost:8001/jobs?limit=5&offset=0"
 ```
 
 Run the fast test suite:
@@ -69,6 +82,12 @@ Rebuild and restart:
 docker compose up --build api
 ```
 
+If the container starts but the API is not reachable, verify the published port:
+
+```bash
+curl -fsS http://localhost:8001/docs > /dev/null
+```
+
 If the database schema is behind, apply migrations:
 
 ```bash
@@ -96,13 +115,20 @@ docker compose ps redis
 docker compose logs -f redis
 ```
 
+Check whether the job is still waiting in PostgreSQL:
+
+```bash
+curl "http://localhost:8001/jobs?status=queued"
+```
+
 Restart worker:
 
 ```bash
-docker compose up --build worker
+docker compose up -d --build worker
 ```
 
-Important: job state lives in PostgreSQL. Redis only coordinates Celery task delivery.
+Important: job state lives in PostgreSQL. Redis only coordinates Celery task
+delivery.
 
 ## Redis Is Unavailable
 
@@ -123,10 +149,11 @@ Restart Redis and dependent services:
 
 ```bash
 docker compose up -d redis
-docker compose up --build api worker
+docker compose up -d --build api worker
 ```
 
-If a job was created but not delivered to Celery, inspect its status through the API:
+If a job was created but not delivered to Celery, inspect its status through the
+API:
 
 ```bash
 curl http://localhost:8001/jobs
@@ -167,30 +194,34 @@ Symptoms:
 * Alembic head does not match expected project state
 * enum values such as `RETRYING` or `CANCELED` are missing
 
-Check migration state:
+Check migration state against the Docker database:
 
 ```bash
-alembic heads
-alembic history
+docker compose run --rm api alembic heads
+docker compose run --rm api alembic current
+docker compose run --rm api alembic history
 ```
 
 Apply migrations:
 
 ```bash
-alembic upgrade head
+docker compose run --rm api alembic upgrade head
 ```
 
-In Docker:
+If running Alembic outside Docker, make sure `DATABASE_URL` points at the
+database you intend to inspect before using the bare commands:
 
 ```bash
-docker compose run --rm api alembic upgrade head
+alembic current
+alembic upgrade head
 ```
 
 Expected rule: there should be exactly one Alembic head.
 
 ## Job Is Stuck In Running
 
-A job can remain in `running` if a worker stops after claiming it but before persisting a final state.
+A job can remain in `running` if a worker stops after claiming it but before
+persisting a final state.
 
 Inspect jobs:
 
@@ -216,12 +247,14 @@ Recovery behavior:
 * recovered jobs become `failed`
 * recovery uses a guarded transition
 * recovery does not requeue work automatically
+* the CLI prints the recovered count and recovered job IDs
 
 This is conservative because the previous worker outcome may be unknown.
 
 ## Job Is Stuck In Retrying
 
-A `retrying` job means the worker saw a retryable failure and scheduled another Celery delivery.
+A `retrying` job means the worker saw a retryable failure and scheduled another
+Celery delivery.
 
 Check worker logs:
 
@@ -246,7 +279,8 @@ Retry scheduling is handled by Celery. PostgreSQL stores the visible job state.
 
 ## Job Failed After Retries
 
-A job with retryable failures eventually becomes `failed` after the retry limit is exceeded.
+A job with retryable failures eventually becomes `failed` after the retry limit
+is exceeded.
 
 Inspect failed jobs:
 
@@ -258,9 +292,11 @@ Check `error_message` to distinguish:
 
 * permanent payload failure
 * retry limit exceeded
+* unexpected worker exception
 * stuck job recovery
 
-This project does not automatically requeue failed jobs. Retrying failed jobs manually is intentionally out of scope.
+This project does not automatically requeue failed jobs. Retrying failed jobs
+manually is intentionally out of scope.
 
 ## Canceling Jobs
 
@@ -283,13 +319,20 @@ Expected behavior:
 * `completed` -> `409 Conflict`
 * `failed` -> `409 Conflict`
 * `canceled` -> `409 Conflict`
-* missing job job -> `404 Not Found`
+* missing job -> `404 Not Found`
 
-Canceling a job does not remove Celery messages from Redis. If Celery later delivers the task, the worker loads the latest database state and skips canceled jobs.
+Canceling a job does not remove Celery messages from Redis. If Celery later
+delivers the task, the worker loads the latest database state and skips canceled
+jobs.
+
+Successful cancellation responses keep `result`, `completed_at`, and `failed_at`
+as `null`. The API stores `Job canceled by request` in `error_message` so the
+terminal reason is visible.
 
 ## Duplicate Idempotency Key
 
-If a client repeats a request with the same idempotency key, the API returns the existing job instead of intentionally creating a new one.
+If a client repeats a request with the same idempotency key, the API returns the
+existing job instead of intentionally creating a new one.
 
 This protects job creation, not necessarily side effects inside a worker.
 
@@ -299,7 +342,8 @@ Check a job by ID:
 curl http://localhost:8001/jobs/1
 ```
 
-Use idempotency keys when clients may retry submissions after timeouts or network failures.
+Use idempotency keys when clients may retry submissions after timeouts or
+network failures.
 
 ## Smoke Test Fails
 
@@ -308,6 +352,9 @@ Run:
 ```bash
 ./scripts/e2e_smoke.sh
 ```
+
+The smoke script starts from a clean Compose stack and calls
+`docker compose down -v`, so it deletes the local Compose PostgreSQL volume.
 
 If it fails, inspect:
 
@@ -323,7 +370,9 @@ Common fixes:
 
 ```bash
 docker compose down
-docker compose up --build
+docker compose up -d --build postgres redis
+docker compose run --rm api alembic upgrade head
+docker compose up -d --build api worker
 ```
 
 If database state is stale and local data can be discarded:
@@ -334,6 +383,13 @@ docker compose up --build
 ```
 
 Use `down -v` carefully because it deletes local PostgreSQL data.
+
+If the failure is in a job-state assertion, query the job directly and compare
+its persisted state with the scenario output:
+
+```bash
+curl "http://localhost:8001/jobs/1"
+```
 
 ## What This Runbook Does Not Cover
 
