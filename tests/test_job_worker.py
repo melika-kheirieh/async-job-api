@@ -5,10 +5,11 @@ from sqlalchemy.pool import StaticPool
 
 from app.db import Base
 from app.models import JobStatus
+from app.processors import RetryableJobError
 from app.repositories import JobRepository
 from app.schemas import JobCreateRequest
 from app.services import JobService
-from app.tasks import RetryableJobError, get_retry_countdown, process_job_by_id
+from app.tasks import get_retry_countdown, process_job_by_id
 
 
 @pytest.fixture()
