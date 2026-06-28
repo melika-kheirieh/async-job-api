@@ -113,6 +113,12 @@ get_job() {
   curl -sS -f "$BASE_URL/jobs/$job_id"
 }
 
+cancel_job() {
+  local job_id="$1"
+
+  curl -sS -f -X POST "$BASE_URL/jobs/$job_id/cancel"
+}
+
 list_jobs() {
   local status="$1"
 
@@ -165,13 +171,34 @@ compose up -d --build postgres redis
 echo "Applying Alembic migrations..."
 compose run --rm api alembic upgrade head
 
-echo "Starting API and worker services..."
-compose up -d --build api worker
+echo "Starting API service..."
+compose up -d --build api
 
 wait_for_api
 
 echo
-echo "Scenario 1: successful job reaches completed"
+echo "Scenario 1: queued job can be canceled before a worker claims it"
+
+cancel_response="$(post_job '{"payload": {"text": "e2e cancel"}}')"
+cancel_id="$(json_value "id" <<< "$cancel_response")"
+
+echo "Created cancel job_id=$cancel_id"
+
+canceled_job="$(cancel_job "$cancel_id")"
+canceled_status="$(json_value "status" <<< "$canceled_job")"
+canceled_error="$(json_value "error_message" <<< "$canceled_job")"
+
+assert_equal "$canceled_status" "canceled" "queued job should be canceled"
+assert_equal "$canceled_error" "Job canceled by request" "canceled job should store cancellation reason"
+
+echo "Cancel check passed. job_id=$cancel_id"
+
+echo
+echo "Starting worker service..."
+compose up -d --build worker
+
+echo
+echo "Scenario 2: successful job reaches completed"
 
 success_response="$(post_job '{"payload": {"text": "e2e success"}}')"
 success_id="$(json_value "id" <<< "$success_response")"
@@ -186,7 +213,7 @@ assert_equal "$success_status" "completed" "successful job should complete"
 echo "Success job completed."
 
 echo
-echo "Scenario 2: failure job reaches failed and stores error_message"
+echo "Scenario 3: non-retryable failure reaches failed and stores error_message"
 
 failure_response="$(post_job '{"payload": {"text": "e2e failure", "fail": true}}')"
 failure_id="$(json_value "id" <<< "$failure_response")"
@@ -208,7 +235,31 @@ fi
 echo "Failure job failed with error_message=$failure_error"
 
 echo
-echo "Scenario 3: duplicate idempotency key returns the same job id"
+echo "Scenario 4: retryable failure exhausts retries and reaches failed"
+
+retry_response="$(post_job '{"payload": {"text": "e2e transient failure", "transient_fail": true}}')"
+retry_id="$(json_value "id" <<< "$retry_response")"
+
+echo "Created retry job_id=$retry_id"
+
+retry_job="$(wait_for_status "$retry_id" "failed" "completed")"
+retry_status="$(json_value "status" <<< "$retry_job")"
+retry_attempts="$(json_value "attempts" <<< "$retry_job")"
+retry_error="$(json_value "error_message" <<< "$retry_job")"
+
+assert_equal "$retry_status" "failed" "retryable job should fail after retry limit"
+assert_equal "$retry_attempts" "4" "retryable job should include initial attempt plus three retries"
+
+if [[ "$retry_error" != Retryable\ failure\ exceeded\ max\ retries:* ]]; then
+  echo "Retryable job did not store retry limit error_message."
+  echo "$retry_job"
+  exit 1
+fi
+
+echo "Retryable job failed after retries. job_id=$retry_id attempts=$retry_attempts"
+
+echo
+echo "Scenario 5: duplicate idempotency key returns the same job id"
 
 idempotent_body='{"payload": {"text": "e2e idempotency"}, "idempotency_key": "e2e-smoke-idempotency-key"}'
 
@@ -223,7 +274,15 @@ assert_equal "$second_id" "$first_id" "duplicate idempotency key should return e
 echo "Idempotency check passed. job_id=$first_id"
 
 echo
-echo "Scenario 4: list endpoint shows completed jobs"
+echo "Scenario 6: list endpoint shows canceled jobs"
+
+canceled_jobs_response="$(list_jobs "canceled")"
+json_list_contains_id "$cancel_id" <<< "$canceled_jobs_response"
+
+echo "Canceled jobs list contains job_id=$cancel_id"
+
+echo
+echo "Scenario 7: list endpoint shows completed jobs"
 
 completed_jobs_response="$(list_jobs "completed")"
 json_list_contains_id "$success_id" <<< "$completed_jobs_response"
@@ -231,12 +290,13 @@ json_list_contains_id "$success_id" <<< "$completed_jobs_response"
 echo "Completed jobs list contains job_id=$success_id"
 
 echo
-echo "Scenario 5: list endpoint shows failed jobs"
+echo "Scenario 8: list endpoint shows failed jobs"
 
 failed_jobs_response="$(list_jobs "failed")"
 json_list_contains_id "$failure_id" <<< "$failed_jobs_response"
+json_list_contains_id "$retry_id" <<< "$failed_jobs_response"
 
-echo "Failed jobs list contains job_id=$failure_id"
+echo "Failed jobs list contains job_id=$failure_id and job_id=$retry_id"
 
 echo
 echo "Docker e2e smoke test passed."
