@@ -19,6 +19,12 @@ class JobNotFoundError(Exception):
         super().__init__(f"Job {job_id} was not found.")
 
 
+class JobCancellationConflictError(Exception):
+    def __init__(self, status: JobStatus):
+        self.status = status
+        super().__init__(f"Job cannot be canceled from {status.value} status")
+
+
 class JobService:
     def __init__(
         self,
@@ -146,6 +152,26 @@ class JobService:
         if job is None:
             raise JobNotFoundError(job_id)
         return job
+
+    def cancel_job(self, job_id: int) -> Job:
+        job = self.repository.cancel_job(job_id)
+        if job is not None:
+            log_event(
+                logging.INFO,
+                "job_canceled",
+                job_id=job.id,
+                status=job.status,
+                attempts=job.attempts,
+            )
+
+            return job
+
+        existing_job = self.repository.get_by_id(job_id)
+        if existing_job is None:
+            raise JobNotFoundError(job_id)
+
+        raise JobCancellationConflictError(existing_job.status)
+
     def recover_stuck_jobs(
         self,
         timeout_minutes: int = DEFAULT_STUCK_JOB_TIMEOUT_MINUTES,

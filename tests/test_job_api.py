@@ -234,6 +234,83 @@ def test_get_missing_job_returns_404(client):
     assert response.json()["detail"] == "Job not found"
 
 
+def test_cancel_queued_job_returns_canceled_job(client):
+    create_response = create_job(
+        client,
+        payload={"text": "cancel me"},
+    )
+    job_id = create_response.json()["id"]
+
+    response = client.post(f"/jobs/{job_id}/cancel")
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    assert data["id"] == job_id
+    assert data["status"] == "canceled"
+    assert data["result"] is None
+    assert data["error_message"] is None
+    assert data["attempts"] == 0
+    assert data["completed_at"] is None
+    assert data["failed_at"] is None
+
+
+def test_cancel_retrying_job_returns_canceled_job(client, job_repository):
+    create_response = create_job(
+        client,
+        payload={"text": "cancel retry"},
+    )
+    job_id = create_response.json()["id"]
+
+    job_repository.mark_retrying(
+        job_id=job_id,
+        error_message="Temporary failure for test",
+    )
+
+    response = client.post(f"/jobs/{job_id}/cancel")
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    assert data["id"] == job_id
+    assert data["status"] == "canceled"
+    assert data["error_message"] is None
+
+
+@pytest.mark.parametrize("status", ["running", "completed", "failed", "canceled"])
+def test_cancel_non_cancelable_job_returns_409(client, job_repository, status):
+    create_response = create_job(
+        client,
+        payload={"text": f"{status} job"},
+    )
+    job_id = create_response.json()["id"]
+
+    if status == "running":
+        job_repository.claim_job_for_processing(job_id)
+    elif status == "completed":
+        job_repository.mark_completed(job_id, {"processed": True})
+    elif status == "failed":
+        job_repository.mark_failed(job_id, "Already failed")
+    elif status == "canceled":
+        job_repository.cancel_job(job_id)
+
+    response = client.post(f"/jobs/{job_id}/cancel")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        f"Job cannot be canceled from {status} status"
+    )
+
+
+def test_cancel_missing_job_returns_404(client):
+    response = client.post("/jobs/999999/cancel")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Job not found"
+
+
 def test_list_jobs_returns_all_jobs_ordered_by_newest_first(client):
     first_response = create_job(
         client,
@@ -314,6 +391,28 @@ def test_list_jobs_filters_by_retrying_status(client, job_repository):
     assert data["items"][0]["id"] == job_id
     assert data["items"][0]["status"] == "retrying"
     assert data["items"][0]["error_message"] == "Temporary failure for test"
+
+
+def test_list_jobs_filters_by_canceled_status(client, job_repository):
+    response = create_job(
+        client,
+        payload={"text": "canceled job"},
+    )
+
+    job_id = response.json()["id"]
+
+    job_repository.cancel_job(job_id)
+
+    list_response = client.get("/jobs?status=canceled")
+
+    assert list_response.status_code == 200
+
+    data = list_response.json()
+
+    assert data["count"] == 1
+    assert len(data["items"]) == 1
+    assert data["items"][0]["id"] == job_id
+    assert data["items"][0]["status"] == "canceled"
 
 
 def test_list_jobs_supports_limit_and_offset(client):

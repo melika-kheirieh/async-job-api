@@ -208,6 +208,28 @@ def test_worker_skips_running_job_without_incrementing_attempts(db_session):
     assert updated_job.failed_at is None
 
 
+def test_worker_skips_canceled_job_without_incrementing_attempts(db_session):
+    repository = JobRepository(db_session)
+    service = JobService(repository)
+
+    job = service.create_job(
+        JobCreateRequest(payload={"text": "already canceled"})
+    )
+    canceled_job = service.cancel_job(job.id)
+
+    process_job_by_id(job.id, db_session)
+
+    updated_job = service.get_job(job.id)
+
+    assert updated_job.status == JobStatus.CANCELED
+    assert updated_job.result is None
+    assert updated_job.error_message is None
+    assert updated_job.attempts == canceled_job.attempts
+    assert updated_job.started_at is None
+    assert updated_job.completed_at is None
+    assert updated_job.failed_at is None
+
+
 def test_retry_countdown_uses_exponential_backoff_with_cap():
     assert get_retry_countdown(0) == 1
     assert get_retry_countdown(1) == 2

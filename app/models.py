@@ -23,6 +23,7 @@ class JobStatus(StrEnum):
     RETRYING = "retrying"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELED = "canceled"
 
 
 class Job(Base):

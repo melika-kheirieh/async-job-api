@@ -5,7 +5,7 @@ from app.db import get_db
 from app.models import JobStatus
 from app.repositories import JobRepository
 from app.schemas import JobCreateRequest, JobListResponse, JobResponse
-from app.services import JobNotFoundError, JobService
+from app.services import JobCancellationConflictError, JobNotFoundError, JobService
 
 app = FastAPI(title="Async Job API")
 
@@ -71,4 +71,26 @@ def get_job(
         raise HTTPException(
             status_code=http_status.HTTP_404_NOT_FOUND,
             detail="Job not found",
+        )
+
+
+@app.post(
+    "/jobs/{job_id}/cancel",
+    response_model=JobResponse,
+)
+def cancel_job(
+    job_id: int,
+    service: JobService = Depends(get_job_service),
+) -> JobResponse:
+    try:
+        return service.cancel_job(job_id)
+    except JobNotFoundError:
+        raise HTTPException(
+            status_code=http_status.HTTP_404_NOT_FOUND,
+            detail="Job not found",
+        )
+    except JobCancellationConflictError as exc:
+        raise HTTPException(
+            status_code=http_status.HTTP_409_CONFLICT,
+            detail=str(exc),
         )
