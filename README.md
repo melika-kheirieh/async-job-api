@@ -1,5 +1,7 @@
 # Async Job API
 
+[![CI](https://github.com/melika-kheirieh/async-job-api/actions/workflows/ci.yml/badge.svg)](https://github.com/melika-kheirieh/async-job-api/actions/workflows/ci.yml)
+
 A compact FastAPI and Celery backend that makes asynchronous job state explicit,
 durable, and testable.
 
@@ -10,6 +12,16 @@ truth for the job lifecycle.
 > This project is production-aware, not production-complete. It handles selected
 > retry, duplicate-delivery, and recovery risks without claiming exactly-once
 > execution or exactly-once side effects.
+
+## What This Demonstrates
+
+- FastAPI API design around durable asynchronous work.
+- PostgreSQL-backed job lifecycle state instead of in-memory task status.
+- Celery and Redis integration with the database as the source of truth.
+- Conditional state transitions for claim, retry, completion, failure, and recovery paths.
+- Idempotent job submission using a database uniqueness boundary.
+- Focused automated tests for API, service, repository, and worker behavior.
+- Clear production boundaries for what the project does and does not guarantee.
 
 ## Reliability Model
 
@@ -33,7 +45,7 @@ flowchart LR
     API --> Redis["Redis broker"]
     Redis --> Worker["Celery worker"]
     Worker --> DB
-```
+````
 
 Application boundaries remain small and explicit:
 
@@ -43,10 +55,10 @@ Worker -> Service -> Repository -> Database
 Celery task -> testable worker-processing function
 ```
 
-- The router owns HTTP concerns.
-- The service owns job use cases.
-- The repository owns persistence and guarded transitions.
-- The Celery task is a thin wrapper around testable worker logic.
+* The router owns HTTP concerns.
+* The service owns job use cases.
+* The repository owns persistence and guarded transitions.
+* The Celery task is a thin wrapper around testable worker logic.
 
 Tasks carry only a `job_id`. The worker loads the latest payload and state from
 PostgreSQL before attempting a guarded claim.
@@ -64,13 +76,13 @@ stateDiagram-v2
     retrying --> failed: retry limit exhausted
 ```
 
-| Status | Meaning |
-|---|---|
-| `queued` | Waiting to be claimed. |
-| `running` | Claimed and being processed. |
-| `retrying` | Waiting for another attempt. |
-| `completed` | Finished successfully. |
-| `failed` | Permanently failed or recovered as stuck. |
+| Status      | Meaning                                   |
+| ----------- | ----------------------------------------- |
+| `queued`    | Waiting to be claimed.                    |
+| `running`   | Claimed and being processed.              |
+| `retrying`  | Waiting for another attempt.              |
+| `completed` | Finished successfully.                    |
+| `failed`    | Permanently failed or recovered as stuck. |
 
 Only `queued` and `retrying` jobs are claimable. `completed` and `failed` are
 terminal.
@@ -113,11 +125,11 @@ you also want to delete local PostgreSQL data.
 
 ## API
 
-| Method | Endpoint | Purpose |
-|---|---|---|
-| `POST` | `/jobs` | Create and enqueue a job. |
-| `GET` | `/jobs/{job_id}` | Read durable state and result. |
-| `GET` | `/jobs` | Filter and paginate jobs. |
+| Method | Endpoint         | Purpose                        |
+| ------ | ---------------- | ------------------------------ |
+| `POST` | `/jobs`          | Create and enqueue a job.      |
+| `GET`  | `/jobs/{job_id}` | Read durable state and result. |
+| `GET`  | `/jobs`          | Filter and paginate jobs.      |
 
 ### Create a Job
 
@@ -153,11 +165,11 @@ curl "http://localhost:8001/jobs?status=failed&limit=20&offset=0"
 
 List behavior:
 
-- `status` is optional and accepts any lifecycle status;
-- `limit` accepts 1-100;
-- `offset` must be non-negative;
-- results are ordered newest first;
-- responses include `items`, `limit`, `offset`, and total matching `count`.
+* `status` is optional and accepts any lifecycle status;
+* `limit` accepts 1-100;
+* `offset` must be non-negative;
+* results are ordered newest first;
+* responses include `items`, `limit`, `offset`, and total matching `count`.
 
 Unknown job IDs return `404`; invalid query parameters return `422`.
 
@@ -232,21 +244,21 @@ The script starts a clean Docker Compose stack, applies migrations, and verifies
 successful completion, persisted failure, duplicate idempotency behavior, and
 filtered job listing. It exits non-zero on failure and cleans up on exit.
 
-GitHub Actions runs `pytest -q` with Python 3.12 on pushes and pull requests. The
-Docker smoke test remains a manual integration check.
+GitHub Actions runs `pytest -q` on pushes and pull requests. The Docker smoke
+test remains a manual integration check.
 
 ## Decisions and Boundaries
 
-- [Architecture decisions](docs/decisions.md)
-- [Production boundaries](docs/production-boundaries.md)
+* [Architecture decisions](docs/decisions.md)
+* [Production boundaries](docs/production-boundaries.md)
 
 Important non-guarantees include:
 
-- no exactly-once execution or side effects;
-- no atomic database-to-broker publication;
-- no automatic scheduled recovery or dead-letter workflow;
-- no full stale-worker fencing;
-- no production observability or deployment hardening.
+* no exactly-once execution or side effects;
+* no atomic database-to-broker publication;
+* no automatic scheduled recovery or dead-letter workflow;
+* no full stale-worker fencing;
+* no production observability or deployment hardening.
 
 The project intentionally avoids expanding into Kafka, Kubernetes, multiple job
 types, priority queues, an admin dashboard, distributed locking, or a complete
