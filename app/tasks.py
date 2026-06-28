@@ -5,6 +5,11 @@ from sqlalchemy.orm import Session
 from app.celery_app import celery_app
 from app.db import SessionLocal
 from app.job_events import log_event
+from app.processors import (
+    DemoJobProcessor,
+    NonRetryableJobError,
+    RetryableJobError,
+)
 from app.repositories import JobRepository
 from app.services import JobNotFoundError, JobService
 
@@ -12,35 +17,14 @@ MAX_RETRIES = 3
 MAX_RETRY_COUNTDOWN_SECONDS = 30
 
 
-class RetryableJobError(Exception):
-    pass
-
-
-class NonRetryableJobError(Exception):
-    pass
-
-
 def get_retry_countdown(retry_number: int) -> int:
     return min(2**retry_number, MAX_RETRY_COUNTDOWN_SECONDS)
-
-
-def build_job_result(payload: dict) -> dict:
-    if payload.get("fail") is True:
-        raise NonRetryableJobError("Forced failure requested by payload")
-
-    if payload.get("transient_fail") is True:
-        raise RetryableJobError("Transient failure requested by payload")
-
-    return {
-        "processed": True,
-        "input_size": len(str(payload)),
-        "message": "Job completed successfully",
-    }
 
 
 def process_job_by_id(job_id: int, db: Session) -> None:
     repository = JobRepository(db)
     service = JobService(repository)
+    processor = DemoJobProcessor()
 
     try:
         job = service.claim_job_for_processing(job_id)
@@ -70,7 +54,7 @@ def process_job_by_id(job_id: int, db: Session) -> None:
     )
 
     try:
-        result = build_job_result(job.payload)
+        result = processor.process(job.payload)
 
         completed_job = service.mark_completed(job_id, result)
 
