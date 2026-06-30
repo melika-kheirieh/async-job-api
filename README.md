@@ -68,6 +68,8 @@ pytest -q
 
 ## Architecture
 
+![Async Job API architecture](docs/assets/async-job-api-architecture.png)
+
 ```mermaid
 flowchart TD
     Client["Client"] --> API["FastAPI"]
